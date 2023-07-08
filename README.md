@@ -1,5 +1,3 @@
-Sure! Here's the documentation for the script:
-
 # DOConsole
 
 DOConsole is a command-line tool that provides an interactive console for managing DigitalOcean resources and running Ansible playbooks on droplets.
