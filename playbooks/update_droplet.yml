@@ -1,0 +1,14 @@
+---
+- name: Update and install Docker on Droplet
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update APT cache
+      apt:
+        update_cache: yes
+
+    - name: Install Docker.io
+      apt:
+        name: docker.io
+        state: present
+...

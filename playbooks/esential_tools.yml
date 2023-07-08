@@ -1,0 +1,24 @@
+---
+- name: Essential Tools and Public IP
+  hosts: all
+  become: true
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install essential tools
+      apt:
+        name:
+          - curl
+          - vim
+          - htop
+        state: present
+
+    - name: Get Public IP
+      shell: curl -s ifconfig.me
+      register: public_ip
+
+    - name: Print Public IP
+      debug:
+        var: public_ip.stdout
