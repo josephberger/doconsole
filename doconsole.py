@@ -43,6 +43,7 @@ class DOConsole(cmd.Cmd):
             self.do_show_droplets(None)
             print()
             self.do_list_playbooks(None)
+            print()
 
 
     def do_set_token(self, line):
@@ -234,7 +235,7 @@ class DOConsole(cmd.Cmd):
         self.playbooks.clear()
 
         # Print the header
-        print(f"{'Index': <5}{'Playbook': <20}")
+        print(f"{'-': <5}{'Playbook': <20}")
 
         for index, playbook in enumerate(playbook_files):
             self.playbooks.append(playbook)
@@ -280,7 +281,7 @@ class DOConsole(cmd.Cmd):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='DigitalOcean console.')
     parser.add_argument('-t', '--token', type=str, help='DigitalOcean API token. Defaults to DO_API_TOKEN env var')
-    parser.add_argument('-k', '--key', type=str, help='Path to the SSH key.')
+    parser.add_argument('-k', '--key', type=str, default=os.path.expanduser(os.path.join('~', '.ssh', 'id_rsa')), help='Path to the SSH key.')
     parser.add_argument('--init', action='store_true', help='Run get_status and list_playbooks on startup')
     parser.add_argument('--playbooks', type=str, help='Path to the Ansible playbooks directory.')
 
