@@ -194,7 +194,7 @@ class DOConsole(cmd.Cmd):
 
         print("Droplet has been created successfully!")
         print(f"ID: {new_droplet.id}\nName: {new_droplet.name}\nStatus: {new_droplet.status}\nPublic IP: {new_droplet.ip_address}\nCreated at: {new_droplet.created_at}")
-        self.update_droplets(None)  # Refresh droplet status
+        self.update_droplets()  # Refresh droplet status
 
 
     def do_run_playbook(self, line):
