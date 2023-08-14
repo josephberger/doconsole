@@ -1,4 +1,8 @@
----
+# Playbook: update_droplet.yml
+# Description: This Ansible playbook updates the APT cache.
+# Author: Berger
+# Date: 2023-07-27
+
 - name: Update and install Docker on Droplet
   hosts: all
   become: yes
@@ -7,8 +11,3 @@
       apt:
         update_cache: yes
 
-    - name: Install Docker.io
-      apt:
-        name: docker.io
-        state: present
-...

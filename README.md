@@ -2,6 +2,8 @@
 
 DOConsole is a command-line tool that provides an interactive console for managing DigitalOcean resources and running Ansible playbooks on droplets.
 
+Note perfect but basically a PoC for using python and ansible along with DO.
+
 ## Installation
 
 To use DOConsole, follow these steps:
@@ -37,7 +39,7 @@ DOConsole provides the following commands:
 - `set_token`: Set the DigitalOcean API token.
 - `set_ssh_key`: Set the SSH key.
 - `show_info`: Show information about the current console.
-- `show_droplets`: Show the status of all droplets.
+- `list_droplets`: Show the status of all droplets.
 - `set_droplet`: Set the target droplet by its index.
 - `create_droplet`: Create a new droplet.
 - `run_playbook`: Run the active playbook on a droplet.
@@ -45,12 +47,16 @@ DOConsole provides the following commands:
 - `list_playbooks`: List all available Ansible playbooks.
 - `set_playbook`: Set the active playbook by index.
 - `destroy`: Destroy the target droplet.
+- `ssh`: Quick ssh via subprocess.
+- `add_tag_to_droplet`: Add a tag to a droplet.
+- `list_tags`: List the current tags in the DO environment.
+- `set_defaults`: Set some of the defaults when creating a droplet.
 
 ## Examples
 
 1. Show the status of all droplets:
    ```
-   show_droplets
+   list_droplets
    ```
 
 2. Create a new droplet with a specific name:
@@ -82,3 +88,4 @@ DOConsole uses the DigitalOcean Python Library to interact with the DigitalOcean
 This project is licensed under the [MIT License](LICENSE).
 
 Feel free to contribute to this project by reporting issues or submitting pull requests on GitHub.
+
