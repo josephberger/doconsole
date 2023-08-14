@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import glob
+import ast
 
 import digitalocean
 
@@ -37,10 +38,13 @@ class DOConsole(cmd.Cmd):
         self.playbooks = []
         self.active_playbook = None
         self.account = {}
+        self.drop_reigon = "nyc1"
+        self.drop_size = "s-1vcpu-1gb"
+        self.drop_image = "ubuntu-20-04-x64"
         if init:
             print("\n\nDigitalOcean Console Initialized")
             print("-------------------------------\n")
-            self.do_show_droplets(None)
+            self.do_list_droplets(None)
             print()
             self.do_list_playbooks(None)
             print()
@@ -76,11 +80,17 @@ class DOConsole(cmd.Cmd):
 
     def do_show_info(self, line):
         """Show information about the current console."""
-        print("\n\nDigitalOcean Console")
+        print("\n\nDigitalOcean Console Info")
         print("-------------------------------\n")
-        print(f"Active Playbook: {self.active_playbook}")
-        print(f"Target Droplet: {self.get_target_info()}")
-        print(f"Ansible Playbooks Directory: {self.ansible_playbooks}")
+        print(f"{'Target Droplet:': <20} {self.get_target_info()}")
+        print(f"{'Active Playbook:': <20} {self.active_playbook}")
+        print(f"{'Playbooks Directory:': <20} {self.ansible_playbooks}")
+        print(f"{'SSH Key:': <20} {self.ssh_key}")
+        print("\nDefault Values")
+        print("-------------------------------\n")
+        print(f"{'Default Region:': <20} {self.drop_reigon}")
+        print(f"{'Default Image:': <20} {self.drop_image}")
+        print(f"{'Default Size:': <20} {self.drop_size}")
         print("\n-------------------------------\n")
 
 
@@ -92,7 +102,7 @@ class DOConsole(cmd.Cmd):
             return None
 
 
-    def do_show_droplets(self, line):
+    def do_list_droplets(self, line):
         """Show the status of all droplets."""
         self.droplets = []
         self.update_droplets()
@@ -151,9 +161,9 @@ class DOConsole(cmd.Cmd):
 
         new_droplet = digitalocean.Droplet(token=self.token,
                                             name=line,
-                                            region='nyc1',
-                                            image='ubuntu-20-04-x64',
-                                            size_slug='s-1vcpu-1gb',
+                                            region=self.drop_reigon,
+                                            image=self.drop_image,
+                                            size_slug=self.drop_size,
                                             ssh_keys=my_ssh_keys,
                                             backups=False)
         
@@ -194,7 +204,7 @@ class DOConsole(cmd.Cmd):
 
         print("Droplet has been created successfully!")
         print(f"ID: {new_droplet.id}\nName: {new_droplet.name}\nStatus: {new_droplet.status}\nPublic IP: {new_droplet.ip_address}\nCreated at: {new_droplet.created_at}")
-        self.update_droplets(None)  # Refresh droplet status
+        self.update_droplets()  # Refresh droplet status
 
 
     def do_run_playbook(self, line):
@@ -269,6 +279,94 @@ class DOConsole(cmd.Cmd):
         else:
             print("Droplet destruction cancelled.")
 
+    ## Start of new features content
+    def do_list_tags(self, line):
+        """List all available tags."""
+        tags = self.manager.get_all_tags()
+
+        if not tags:
+            print("No tags found.")
+            return
+
+        print("Available Tags:")
+        for tag in tags:
+            print(tag.name)
+
+    def do_add_tag_to_droplet(self, line):
+        """Add a tag to the target droplet."""
+        if self.target is None:
+            print("No droplet selected. Use 'set_droplet' command to select a droplet.")
+            return
+
+        if not line:
+            print("Please provide the name of the tag to add.")
+            return
+
+        droplet = self.manager.get_droplet(self.target['ID'])
+
+        # Create a Tag object with the provided name
+        tag = digitalocean.Tag(token=self.token, name=line)
+        try:
+            tag.create()
+            # Add the Tag to the Droplet
+            #droplet.add_tags([tag])
+            tag.add_droplets([droplet])
+            print(f"Tag '{line}' has been added to droplet '{droplet.name}'.")
+        except digitalocean.DataReadError as e:
+            print(f"An error occurred while adding the tag: {e}")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+
+    def do_ssh(self, line):
+        """Start an SSH session to the target droplet."""
+        if self.target is None:
+            print("No droplet selected. Use 'use' command to select a droplet.")
+            return
+
+        droplet_ip = self.target.get('Public IP')
+        if droplet_ip is None:
+            print("Droplet IP address is not available.")
+            return
+
+        ssh_username = 'root'  # Replace with the appropriate username for your droplet
+        ssh_command = f"ssh {ssh_username}@{droplet_ip}"
+
+        try:
+            subprocess.run(ssh_command, shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error occurred while connecting: {e}")
+        except KeyboardInterrupt:
+            print("SSH session interrupted.")
+
+
+    def do_set_defaults(self, line):
+        """Set the default values for region, size, and image of the new droplets."""
+        regions = self.manager.get_all_regions()
+        sizes = self.manager.get_all_sizes()
+        images = self.manager.get_all_images()
+
+        print("Current default values:")
+        print(f"Region: {self.drop_reigon}")
+        print(f"Size: {self.drop_size}")
+        print(f"Image: {self.drop_image}")
+
+        line_break = "\n"
+
+        new_region = input(f"Enter the new default region {', '.join([region.slug for region in regions])} [{self.drop_reigon}]: ").strip()
+        new_size = input(f"Enter the new default size {line_break.join([size.slug for size in sizes])} [{self.drop_size}]: ").strip()
+        new_image = input(f"Enter the new default image {line_break.join([image.slug for image in images])} [{self.drop_image}]: ").strip()
+
+        if new_region.strip() != "":
+            self.drop_reigon = new_region
+        if new_size.strip() != "":
+            self.drop_size = new_size
+        if new_image.strip() != "":
+            self.drop_image = new_image
+
+        print("Defaults updated successfully.")
+
+
+    ## End of new features content
 
     def do_quit(self, line):
         """Quit the console."""
