@@ -1,0 +1,28 @@
+---
+- name: Transfer a folder to the default directory of the user
+  hosts: all
+  become: true
+  vars_prompt:
+    - name: folder_path
+      prompt: "Enter the path to the folder you want to transfer"
+      private: no
+  tasks:
+    - name: Ensure the destination directory exists
+      file:
+        path: "{{ ansible_env.HOME }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+
+    - name: Transfer the folder to the default directory
+      copy:
+        src: "{{ folder_path }}/"
+        dest: "{{ ansible_env.HOME }}/{{ folder_path | basename }}"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+
+    - name: Print the path of the transferred folder
+      debug:
+        msg: "Folder has been transferred to {{ ansible_env.HOME }}/{{ folder_path | basename }}"
