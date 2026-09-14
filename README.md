@@ -1,13 +1,13 @@
 # DigitalOcean Console (DOConsole)
 
-`DOConsole` is a command-line interface (CLI) tool that allows you to manage DigitalOcean droplets and run Ansible playbooks. The tool provides functionalities to set configurations, create and destroy droplets, add tags, run Ansible playbooks, and more.
+`DOConsole` is a command-line console for tinkering in DigitalOcean fast: spin up a droplet, run an Ansible playbook against it, SSH in, tear it down. It's a personal tool, not infrastructure-as-code — there's no persisted droplet state, just a thin wrapper over the DigitalOcean API.
 
 ## Features
 
-- **Manage Droplets**: List, create, destroy, and tag DigitalOcean droplets.
-- **Run Ansible Playbooks**: Execute Ansible playbooks on your droplets.
-- **SSH Access**: SSH into your droplets directly from the console.
-- **Customizable Settings**: Configure default region, size, and image for new droplets.
+- **Manage Droplets**: list, create, destroy, and tag DigitalOcean droplets.
+- **Run Ansible Playbooks**: execute Ansible playbooks against a droplet.
+- **SSH Access**: SSH into a droplet directly from the console.
+- **Customizable Defaults**: region, size, image, and VPC for new droplets, persisted between sessions.
 
 ## Installation
 
@@ -22,7 +22,7 @@
    pip install -r requirements.txt
    ```
 
-3. **Ensure Ansible is Installed**:
+3. **Ensure Ansible is Installed** (only needed for `run playbook`):
    ```sh
    sudo apt install ansible
    ```
@@ -31,13 +31,18 @@
 
 1. **Run the Console**:
    ```sh
-   python doconsole.py --token YOUR_DO_TOKEN --ssh_key PATH_TO_YOUR_SSH_KEY
+   python doconsole.py --token YOUR_DO_TOKEN --key PATH_TO_YOUR_SSH_KEY
    ```
+   Instead of passing flags, copy `.env.example` to `.env` and fill in your values:
+   ```sh
+   cp .env.example .env
+   ```
+   `.env` is only a fallback — a `--token`/`--key`/`--playbooks` flag or a real environment variable of the same name always takes priority over it. `.env` is gitignored, so your token never gets committed.
 
 2. **Commands Overview**:
    - **Set Configurations**:
      ```sh
-     set <droplet|playbook|token|ssh_key|reigon|size|image>
+     set <droplet|playbook|token|ssh_key|region|size|image|vpc>
      ```
      - Example: `set droplet 1`
    - **Show Information**:
@@ -64,26 +69,19 @@
      ```sh
      destroy
      ```
-     - Example: `destroy`
    - **SSH into Droplet**:
      ```sh
      ssh
      ```
-     - Example: `ssh`
 
 ## Examples
 
-1. **Initialize Console**:
+1. **Show droplets and playbooks on startup**:
    ```sh
-   python doconsole.py --token YOUR_DO_TOKEN --ssh_key PATH_TO_YOUR_SSH_KEY --init
+   python doconsole.py --token YOUR_DO_TOKEN --init
    ```
 
-2. **List Droplets and Playbooks on Startup**:
-   ```sh
-   python doconsole.py --token YOUR_DO_TOKEN --ssh_key PATH_TO_YOUR_SSH_KEY --init
-   ```
-
-3. **Run a Playbook on a Droplet**:
+2. **Run a playbook on a droplet**:
    ```sh
    set droplet 1
    set playbook 0
@@ -92,32 +90,36 @@
 
 ## Command Details
 
-- **set**:
-  - Set various configurations such as the target droplet, active playbook, API token, SSH key, default region, size, and image.
-
-- **show**:
-  - Display information about droplets, playbooks, tags, target droplet, and console info.
-
-- **create**:
-  - Create a new droplet with the specified name using default or configured settings.
-
-- **add**:
-  - Add a tag to the selected droplet(s).
-
-- **run**:
-  - Run the specified Ansible playbook on the target droplet.
-
-- **destroy**:
-  - Destroy the selected droplet(s).
-
-- **ssh**:
-  - Start an SSH session to the target droplet.
+- **set**: configure the target droplet, active playbook, API token (session-only), SSH key, and the default region/size/image/vpc for new droplets.
+- **show**: display droplets, playbooks, tags, the current target, or console/account info.
+- **create**: create a new droplet with the configured defaults.
+- **add**: add a tag to the selected droplet(s).
+- **run**: run a playbook against the target droplet.
+- **destroy**: destroy the selected droplet(s), with a confirmation prompt.
+- **ssh**: start an SSH session to the target droplet.
 
 ## Configuration
 
-- **API Token**: Your DigitalOcean API token. Required for all operations.
-- **SSH Key**: Path to your SSH private key. Required for connecting to droplets and running playbooks.
-- **Ansible Playbooks Directory**: Directory containing your Ansible playbooks. Defaults to `./playbooks`.
+- **API Token**: your DigitalOcean API token. Resolved in order: `--token` flag, `DO_API_TOKEN` environment variable, `DO_API_TOKEN` in `.env`. Never written to disk by the console itself.
+- **SSH Key**: path to your SSH private key, used for both `ssh` and `run playbook`. Resolved in order: `--key` flag, `DOCONSOLE_SSH_KEY` environment variable, `DOCONSOLE_SSH_KEY` in `.env`, else `~/.ssh/id_rsa`.
+- **Ansible Playbooks Directory**: resolved in order: `--playbooks` flag, `DOCONSOLE_PLAYBOOKS_DIR` environment variable, `DOCONSOLE_PLAYBOOKS_DIR` in `.env`, else `./playbooks`.
+- **`.env` file**: copy `.env.example` to `.env` to set any of the above without passing flags or exporting real environment variables. A real environment variable of the same name always overrides the value in `.env`. `.env` is listed in `.gitignore` and must never be committed.
+- **Other defaults** (`region`, `size`, `image`, `vpc`): saved to `~/.doconsole/config.json` whenever changed via `set`, so they carry over between sessions.
+
+## Project layout
+
+- `doconsole.py` — the `cmd.Cmd` console and CLI entrypoint.
+- `do_api.py` — thin `requests`-based client for the DigitalOcean REST API.
+- `formatting.py` — table/column output helpers.
+- `config.py` — loads/saves `~/.doconsole/config.json`.
+- `tests/` — pytest suite (formatting is tested directly, `do_api` against mocked HTTP via `responses`, and the console via `cmd.Cmd.onecmd` against a fake API client).
+
+## Development
+
+```sh
+pip install -r requirements-dev.txt
+pytest
+```
 
 ## Contribution
 
@@ -126,5 +128,3 @@ Feel free to submit issues or pull requests if you have any improvements or bug 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-
-Feel free to contribute to this project by reporting issues or submitting pull requests on GitHub.

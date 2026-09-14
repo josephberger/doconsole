@@ -1,14 +1,47 @@
-import shutil
 import argparse
-import subprocess
 import cmd
-import os
-import sys
-import time
 import glob
-import ast
+import os
+import shutil
+import subprocess
+import sys
 
-import digitalocean
+from dotenv import load_dotenv
+
+import config
+import formatting
+from do_api import DOAPIClient, DOAPIError
+
+
+def _extract_ips(droplet):
+    public_ip = None
+    private_ip = None
+    for network in droplet.get("networks", {}).get("v4", []):
+        if network["type"] == "public":
+            public_ip = network["ip_address"]
+        elif network["type"] == "private":
+            private_ip = network["ip_address"]
+    return public_ip, private_ip
+
+
+def _droplet_row(droplet):
+    public_ip, private_ip = _extract_ips(droplet)
+    return {
+        "ID": droplet["id"],
+        "Name": droplet["name"],
+        "Status": droplet["status"],
+        "Public IP": public_ip,
+        "Private IP": private_ip,
+        "Created at": droplet["created_at"],
+        "Memory": droplet["memory"],
+        "vCPUs": droplet["vcpus"],
+        "Disk": droplet["disk"],
+        "Kernel": droplet.get("kernel"),
+        "Features": droplet.get("features"),
+        "Networks": droplet.get("networks"),
+        "Tags": droplet.get("tags"),
+        "Size": droplet.get("size_slug"),
+    }
 
 
 class DOConsole(cmd.Cmd):
@@ -18,65 +51,61 @@ class DOConsole(cmd.Cmd):
 
     prompt = '(DOConsole) '
 
-    def __init__(self, token, ssh_key, playbooks_dir=None, init=False):
-        """
-        Initialize the DOConsole.
-
-        Args:
-            token (str): DigitalOcean API token.
-            ssh_key (str): Path to the SSH key.
-            playbooks_dir (str, optional): Path to the Ansible playbooks directory. Defaults to None.
-            init (bool, optional): Flag to run get_status and list_playbooks on startup. Defaults to False.
-        """
+    def __init__(self, token, ssh_key, playbooks_dir=None):
         super().__init__()
 
         self.subcommands = {
-            'set': ['droplet', 'playbook', 'token', 'ssh_key', 'reigon', 'size', 'image', 'vpc'],
-            'show': ['droplets', 'playbooks', 'tags','target', 'info'],
+            'set': ['droplet', 'playbook', 'token', 'ssh_key', 'region', 'size', 'image', 'vpc'],
+            'show': ['droplets', 'playbooks', 'tags', 'target', 'info'],
             'create': ['droplet'],
             'add': ['tag'],
             'run': ['playbook'],
         }
 
+        self.config = config.load_config()
+
         self.token = token
-        self.ssh_key = ssh_key
-        self.manager = digitalocean.Manager(token=self.token)
+        self.api = DOAPIClient(token)
+        self.ssh_key = ssh_key or self.config.get("ssh_key")
         self.droplets = []
         self.target = None
-        self.ansible_playbooks = playbooks_dir or os.path.join(os.getcwd(), 'playbooks')
+        self.ansible_playbooks = playbooks_dir or self.config.get("playbooks_dir") or os.path.join(os.getcwd(), 'playbooks')
         self.playbooks = []
         self.active_playbook = None
-        self.account = {}
-        self.drop_reigon = "nyc1"
-        self.drop_size = "s-1vcpu-1gb"
-        self.drop_image = "ubuntu-20-04-x64"
-        self.vpc = None
-        if init:
-            print("DigitalOcean Console Initialized")
-            print("-------------------------------\n")
-            self.do_show('droplets')
-            print()
-            self.do_show('playbooks')
-            print()
+        self.region = self.config.get("region")
+        self.size = self.config.get("size")
+        self.image = self.config.get("image")
+        self.vpc_id = self.config.get("vpc_id")
+
+    def _save_config(self):
+        self.config.update({
+            "region": self.region,
+            "size": self.size,
+            "image": self.image,
+            "vpc_id": self.vpc_id,
+            "ssh_key": self.ssh_key,
+            "playbooks_dir": self.ansible_playbooks,
+        })
+        config.save_config(self.config)
 
     def do_set(self, line):
-        """Set: droplet, playbook, token, ssh_key, reigon, size, image."""
+        """Set: droplet, playbook, token, ssh_key, region, size, image, vpc."""
         args = line.split()
         if len(args) == 0:
-            print("Usage: set <droplet|playbook|token|ssh_key|reigon|size|image>")
+            print("Usage: set <droplet|playbook|token|ssh_key|region|size|image|vpc>")
             return
-        
+
         command = args[0]
         if command == "droplet":
             self.set_droplet(" ".join(args[1:]))
         elif command == "playbook":
             self.set_playbook(" ".join(args[1:]))
         elif command == "token":
-            self.do_set_token(" ".join(args[1:]))
+            self.set_token(" ".join(args[1:]))
         elif command == "ssh_key":
             self.set_ssh_key(" ".join(args[1:]))
-        elif command == "reigon":
-            self.set_reigon()
+        elif command == "region":
+            self.set_region()
         elif command == "size":
             self.set_size()
         elif command == "image":
@@ -99,8 +128,8 @@ class DOConsole(cmd.Cmd):
             self.target = self.droplets[index]
             self.prompt = f'(DOConsole) {self.target["Name"]}> '
         except (IndexError, ValueError):
-            print("Invalid droplet index. Use list_droplets to see available droplets and their indices.")
-    
+            print("Invalid droplet index. Use 'show droplets' to see available droplets and their indices.")
+
     def set_playbook(self, index):
         """Set the active playbook by index."""
         try:
@@ -111,89 +140,113 @@ class DOConsole(cmd.Cmd):
             print("Invalid index. Please provide a valid index number.")
 
     def set_token(self, token):
-        """Set the DigitalOcean API token."""
+        """Set the DigitalOcean API token for this session."""
+        if not token:
+            print("Please provide a valid API token.")
+            return
         self.token = token
+        self.api = DOAPIClient(token)
         print("API token set successfully.")
 
     def set_ssh_key(self, ssh_key_path):
         """Set the SSH key."""
-        if ssh_key_path:
-            self.ssh_key = ssh_key_path
-            print(f"SSH key set: {self.ssh_key}")
-        else:
+        if not ssh_key_path:
             print("Please provide a valid path to the SSH key.")
+            return
+        self.ssh_key = ssh_key_path
+        self._save_config()
+        print(f"SSH key set: {self.ssh_key}")
 
-    def set_reigon(self):
+    def set_region(self):
         """Set the default region for new droplets."""
-        regions = self.manager.get_all_regions()
+        try:
+            regions = self.api.list_regions()
+        except DOAPIError as e:
+            print(f"Could not fetch regions: {e}")
+            return
+
         print("Available regions:")
         for region in regions:
-            print(region.slug)
+            print(region["slug"])
 
-        new_region = input(f"Enter the new default region [{self.drop_reigon}]: ").strip()
-        if new_region:
-            # verify if the region is valid
-            if new_region not in [region.slug for region in regions]:
-                print("Invalid region.")
-                return
-            self.drop_reigon = new_region
-            print(f"Default region set to {new_region}.")
-        else:
+        new_region = input(f"Enter the new default region [{self.region}]: ").strip()
+        if not new_region:
             print("Default region not changed.")
+            return
+        if new_region not in [r["slug"] for r in regions]:
+            print("Invalid region.")
+            return
+        self.region = new_region
+        self._save_config()
+        print(f"Default region set to {new_region}.")
 
     def set_size(self):
         """Set the default size for new droplets."""
-        sizes = self.manager.get_all_sizes()
-        print("Available sizes:")
-        print(self.format_list_into_columns([size.slug for size in sizes]))
+        try:
+            sizes = self.api.list_sizes()
+        except DOAPIError as e:
+            print(f"Could not fetch sizes: {e}")
+            return
 
-        new_size = input(f"Enter the new default size [{self.drop_size}]: ").strip()
-        if new_size:
-            # verify if the size is valid
-            if new_size not in [size.slug for size in sizes]:
-                print("Invalid size.")
-                return
-            self.drop_size = new_size
-            print(f"Default size set to {new_size}.")
-        else:
+        print("Available sizes:")
+        print(formatting.format_list_into_columns([size["slug"] for size in sizes]))
+
+        new_size = input(f"Enter the new default size [{self.size}]: ").strip()
+        if not new_size:
             print("Default size not changed.")
+            return
+        if new_size not in [size["slug"] for size in sizes]:
+            print("Invalid size.")
+            return
+        self.size = new_size
+        self._save_config()
+        print(f"Default size set to {new_size}.")
 
     def set_image(self):
         """Set the default image for new droplets."""
-        images = self.manager.get_all_images()
-        print("Available images:")
-        print(self.format_list_into_columns([image.slug for image in images]))
+        try:
+            images = self.api.list_images()
+        except DOAPIError as e:
+            print(f"Could not fetch images: {e}")
+            return
 
-        new_image = input(f"Enter the new default image [{self.drop_image}]: ").strip()
-        if new_image:
-            # verify if the image is valid
-            if new_image not in [image.slug for image in images]:
-                print("Invalid image.")
-                return
-            self.drop_image = new_image
-            print(f"Default image set to {new_image}.")
-        else:
+        print("Available images:")
+        print(formatting.format_list_into_columns([image["slug"] for image in images if image.get("slug")]))
+
+        new_image = input(f"Enter the new default image [{self.image}]: ").strip()
+        if not new_image:
             print("Default image not changed.")
+            return
+        if new_image not in [image.get("slug") for image in images]:
+            print("Invalid image.")
+            return
+        self.image = new_image
+        self._save_config()
+        print(f"Default image set to {new_image}.")
 
     def set_vpc(self):
         """Set the VPC for new droplets."""
-        # get the VPCs based on the current default region
-        vpcs = self.manager.get_all_vpcs()
+        try:
+            vpcs = self.api.list_vpcs()
+        except DOAPIError as e:
+            print(f"Could not fetch VPCs: {e}")
+            return
+
         if not vpcs:
             print("No VPCs found.")
             return
-        
+
         data = []
-        for i,vpc in enumerate(vpcs):
+        for i, vpc in enumerate(vpcs):
             data.append({
                 "Index": i,
-                "ID": vpc.id,
-                "Name": vpc.name,
-                "Region": vpc.region
+                "ID": vpc["id"],
+                "Name": vpc["name"],
+                "Region": vpc["region"],
             })
 
         headers = {
-            "-": "Index", 
+            "-": "Index",
             "Name": "Name",
             "Region": "Region",
             "ID": "ID",
@@ -201,37 +254,34 @@ class DOConsole(cmd.Cmd):
 
         preamble = "Available VPCs"
         preamble += f"\n{'-' * len(preamble)}"
-        print(self.format_table(headers, data, preamble=preamble))
+        print(formatting.format_table(headers, data, preamble=preamble))
 
-        new_vpc_id = input("Enter the new VPC ID: ").strip()
-
-        # Validate Selection
+        selection = input("Enter the VPC index: ").strip()
         try:
-            new_vpc_id = int(new_vpc_id)
-            if new_vpc_id < 0 or new_vpc_id >= len(vpcs):
-                print("Invalid VPC index.")
-                return
+            selection = int(selection)
+            if selection < 0 or selection >= len(vpcs):
+                raise ValueError
         except ValueError:
             print("Invalid VPC index.")
             return
-        
-        # Validate new_vpc_is in the self.region
-        if vpcs[new_vpc_id].region != self.drop_reigon:
-            print("The selected VPC is not in the current region.  Change the region to match the VPC region.")
-            return
-        
-        self.vpc = vpcs[new_vpc_id]['ID']
 
-        print(f"VPC set to {vpcs[new_vpc_id].name}. (this is currently reserved for future use and has no effect on droplet creation)")
-    
+        selected = vpcs[selection]
+        if selected["region"] != self.region:
+            print("The selected VPC is not in the current region. Change the region to match the VPC region.")
+            return
+
+        self.vpc_id = selected["id"]
+        self._save_config()
+        print(f"VPC set to {selected['name']}.")
+
     # Show Commands
     def do_show(self, line):
         """Show: droplets, playbooks, tags, target, info."""
         args = line.split()
         if len(args) == 0:
-            print("Usage: show <droplets|playbooks|tags>")
+            print("Usage: show <droplets|playbooks|tags|target|info>")
             return
-        
+
         command = args[0]
         if command == "droplets":
             self.show_droplets()
@@ -246,10 +296,18 @@ class DOConsole(cmd.Cmd):
         else:
             print(f"Unknown subcommand: {command}")
 
+    def refresh_droplets(self):
+        """Refresh self.droplets from the API. Always reassigns, never appends."""
+        try:
+            droplets = self.api.list_droplets()
+        except DOAPIError as e:
+            print(f"Could not fetch droplets: {e}")
+            return
+        self.droplets = [_droplet_row(d) for d in droplets]
+
     def show_droplets(self):
         """Show the status of all droplets."""
-        self.droplets = []
-        self.update_droplets()
+        self.refresh_droplets()
 
         droplet_list = []
         for index, droplet in enumerate(self.droplets):
@@ -273,15 +331,13 @@ class DOConsole(cmd.Cmd):
         else:
             footer = None
 
-        print(self.format_table(headers, droplet_list, preamble=preamble, footer=footer))
+        print(formatting.format_table(headers, droplet_list, preamble=preamble, footer=footer))
 
     def show_playbooks(self):
         """Show all available Ansible playbooks."""
         playbook_files = glob.glob(os.path.join(self.ansible_playbooks, '*.yml'))
-        self.playbooks.clear()
 
         playbooks = []
-
         for index, playbook in enumerate(playbook_files):
             playbooks.append({
                 "Index": index,
@@ -292,7 +348,7 @@ class DOConsole(cmd.Cmd):
             "-": "Index",
             "Playbook": "Playbook"
         }
-        
+
         preamble = "Available Playbooks"
         preamble += f"\n{'-' * len(preamble)}"
 
@@ -301,13 +357,17 @@ class DOConsole(cmd.Cmd):
         else:
             footer = None
 
-        print(self.format_table(headers, playbooks, preamble=preamble, footer=footer))
+        print(formatting.format_table(headers, playbooks, preamble=preamble, footer=footer))
 
         self.playbooks = playbook_files
 
     def show_tags(self):
         """Show all available tags."""
-        tags = self.manager.get_all_tags()
+        try:
+            tags = self.api.list_tags()
+        except DOAPIError as e:
+            print(f"Could not fetch tags: {e}")
+            return
 
         if not tags:
             print("No tags found.")
@@ -315,17 +375,15 @@ class DOConsole(cmd.Cmd):
 
         print("Available Tags")
         print("-" * 15)
-        for tag in tags:
-            print(self.format_list_into_columns([tag.name]))
+        print(formatting.format_list_into_columns([tag["name"] for tag in tags]))
 
     def show_target(self):
         """Show information about the target droplet."""
-        
+
         if not self.target:
             print("No target droplet selected.")
             return
-        
-        # If the target is all droplets, show a table of all droplets
+
         if self.target == "all":
             data = []
             for droplet in self.droplets:
@@ -338,49 +396,50 @@ class DOConsole(cmd.Cmd):
                     "Created at": droplet['Created at']
                 })
 
-                headers = {
-                    "ID": "ID",
-                    "Name": "Name",
-                    "Status": "Status",
-                    "Public IP": "Public IP",
-                    "Private IP": "Private IP",
-                    "Created at": "Created at"
-                }
-
-                preamble = "All Droplets"
-                preamble += f"\n{'-' * len(preamble)}"
-                print(self.format_table(headers, data, preamble=preamble))
-            return
-        
-        # If the target is a single droplet, show a single droplet info
-        else:
-            data = {
-                "ID": self.target['ID'],
-                "Name": self.target['Name'],
-                "Status": self.target['Status'],
-                "Public IP": self.target['Public IP'],
-                "Created at": self.target['Created at'],
-                "Memory": self.target['Memory'],
-                "vCPUs": self.target['vCPUs'],
-                "Tags": self.target['Tags'] if self.target['Tags'] else "None",
+            headers = {
+                "ID": "ID",
+                "Name": "Name",
+                "Status": "Status",
+                "Public IP": "Public IP",
+                "Private IP": "Private IP",
+                "Created at": "Created at"
             }
 
-            for i, network in enumerate(self.target['Networks']['v4']):
-                data[f"IPv4 Address {i+1}"] = network['ip_address']
-                data[f"Netmask {i+1}"] = network['netmask']
-                data[f"Gateway {i+1}"] = network['gateway']
-                data[f"Type {i+1}"] = network['type']
-
-            preamble = "Target Droplet"
+            preamble = "All Droplets"
             preamble += f"\n{'-' * len(preamble)}"
+            print(formatting.format_table(headers, data, preamble=preamble))
+            return
 
-            print(self.format_single_dict(data, preamble=preamble))
+        data = {
+            "ID": self.target['ID'],
+            "Name": self.target['Name'],
+            "Status": self.target['Status'],
+            "Public IP": self.target['Public IP'],
+            "Created at": self.target['Created at'],
+            "Memory": self.target['Memory'],
+            "vCPUs": self.target['vCPUs'],
+            "Tags": self.target['Tags'] if self.target['Tags'] else "None",
+        }
+
+        for i, network in enumerate(self.target['Networks']['v4']):
+            data[f"IPv4 Address {i+1}"] = network['ip_address']
+            data[f"Netmask {i+1}"] = network['netmask']
+            data[f"Gateway {i+1}"] = network['gateway']
+            data[f"Type {i+1}"] = network['type']
+
+        preamble = "Target Droplet"
+        preamble += f"\n{'-' * len(preamble)}"
+
+        print(formatting.format_single_dict(data, preamble=preamble))
 
     def show_info(self):
         """Show information about the current console."""
+        try:
+            account = self.api.get_account()
+        except DOAPIError as e:
+            print(f"Could not fetch account info: {e}")
+            account = None
 
-        # use format_single_dict method for Digital Ocean Console Info
-        self.account = self.manager.get_account()
         preamble = "DigitalOcean Console Info"
         preamble += f"\n{'-' * len(preamble)}"
 
@@ -392,23 +451,24 @@ class DOConsole(cmd.Cmd):
             droplet_name = "None"
 
         data = {
+            "Account Email": account.get("email") if account else "Unknown",
             "Target Droplet": droplet_name,
             "Active Playbook": self.active_playbook,
             "Playbooks Directory": self.ansible_playbooks,
             "SSH Key": self.ssh_key
         }
-        print(self.format_single_dict(data, preamble=preamble))
+        print(formatting.format_single_dict(data, preamble=preamble))
 
-        # use format_table method for Default Values
         preamble = "Default Values"
         preamble += f"\n{'-' * len(preamble)}"
         data = {
-            "Default Region": self.drop_reigon,
-            "Default Image": self.drop_image,
-            "Default Size": self.drop_size
+            "Default Region": self.region,
+            "Default Image": self.image,
+            "Default Size": self.size,
+            "Default VPC": self.vpc_id or "None",
         }
 
-        print(self.format_single_dict(data, preamble=preamble))
+        print(formatting.format_single_dict(data, preamble=preamble))
 
     # Create Commands
     def do_create(self, line):
@@ -417,7 +477,7 @@ class DOConsole(cmd.Cmd):
         if len(args) == 0:
             print("Usage: create <droplet>")
             return
-        
+
         command = args[0]
         if command == "droplet":
             self.create_droplet(" ".join(args[1:]))
@@ -430,64 +490,29 @@ class DOConsole(cmd.Cmd):
         if not name:
             print("Please provide a name for the new droplet.")
             return
-        
-        my_ssh_keys = self.manager.get_all_sshkeys()
 
-
-        new_droplet = digitalocean.Droplet(token=self.token,
-                                           name=name,
-                                           region=self.drop_reigon,
-                                           image=self.drop_image,
-                                           size_slug=self.drop_size,
-                                           ssh_keys=my_ssh_keys,
-                                           backups=False)
-        
         try:
-            new_droplet.create()
-            print("Creating droplet. This may take a few minutes.")
-            # Wait until droplet is completed
-            actions = new_droplet.get_actions()
-            status = ""
-            # Wait for the droplet to become active
-            while status != "completed":
-                actions = new_droplet.get_actions()
-                for action in actions:
-                    action.load()
-                    print(".", end="", flush=True)
-                    status = action.status
-                    if action.status == "completed":
-                        print("!", flush=True)
-                        break
-                    time.sleep(1)
+            ssh_key_ids = [key["id"] for key in self.api.list_ssh_keys()]
 
-            while True:
-                new_droplet.load()
-                if new_droplet.ip_address:
-                    break
-                time.sleep(1)
-
-            new_droplet.load()
-        except digitalocean.DataReadError as e:
-            print(f"An error occurred while creating the droplet: {e}")
+            print("Creating droplet. This may take a few minutes.", end="", flush=True)
+            droplet = self.api.create_droplet(
+                name=name,
+                region=self.region,
+                size=self.size,
+                image=self.image,
+                ssh_key_ids=ssh_key_ids,
+                vpc_id=self.vpc_id,
+                on_poll=lambda: print(".", end="", flush=True),
+            )
+            print()
+        except DOAPIError as e:
+            print(f"\nAn error occurred while creating the droplet: {e}")
             return
-        except digitalocean.Exception as e:
-            print(f"An unexpected error occurred: {e}")
-            return
-        
-        data = {
-            "ID": new_droplet.id,
-            "Name": new_droplet.name,
-            "Status": new_droplet.status,
-            "Public IP": new_droplet.ip_address,
-            "Private IP": new_droplet.private_ip_address if new_droplet.private_ip_address else "None",
-            "Created at": new_droplet.created_at
-        }
 
         preamble = "New Droplet"
         preamble += f"\n{'-' * len(preamble)}"
-
-        print(self.format_single_dict(data, preamble=preamble))
-        self.update_droplets()
+        print(formatting.format_single_dict(_droplet_row(droplet), preamble=preamble))
+        self.refresh_droplets()
 
     # Add Commands
     def do_add(self, line):
@@ -496,7 +521,7 @@ class DOConsole(cmd.Cmd):
         if len(args) == 0:
             print("Usage: add <tag>")
             return
-        
+
         command = args[0]
         if command == "tag":
             self.add_tag(" ".join(args[1:]))
@@ -504,7 +529,7 @@ class DOConsole(cmd.Cmd):
             print(f"Unknown subcommand: {command}")
 
     def add_tag(self, tag_name):
-        """Add a tag to the target droplet."""
+        """Add a tag to the target droplet(s)."""
         if self.target is None:
             print("No droplet selected. Use 'set droplet' command to select a droplet.")
             return
@@ -512,24 +537,28 @@ class DOConsole(cmd.Cmd):
         if not tag_name:
             print("Please provide the name of the tag to add.")
             return
-        
-        if self.target == "all":
-            droplet = [self.manager.get_droplet(droplet['ID']) for droplet in self.droplets]
-        else:
-            droplet = [self.manager.get_droplet(self.target['ID'])]
 
-        # Create a Tag object with the provided name
-        tag = digitalocean.Tag(token=self.token, name=tag_name)
+        if self.target == "all":
+            droplet_ids = [droplet['ID'] for droplet in self.droplets]
+            droplet_names = [droplet['Name'] for droplet in self.droplets]
+        else:
+            droplet_ids = [self.target['ID']]
+            droplet_names = [self.target['Name']]
+
         try:
-            tag.create()
-            # Add the Tag to the Droplet
-            tag.add_droplets(droplet)
-            droplet_names = ",".join([droplet.name for droplet in droplet])
-            print(f"Tag '{tag_name}' has been added to droplet '{droplet_names}' successfully.")
-        except digitalocean.DataReadError as e:
+            self.api.create_tag(tag_name)
+        except DOAPIError as e:
+            if "already exists" not in str(e).lower():
+                print(f"An error occurred while adding the tag: {e}")
+                return
+
+        try:
+            self.api.tag_resources(tag_name, droplet_ids)
+        except DOAPIError as e:
             print(f"An error occurred while adding the tag: {e}")
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+            return
+
+        print(f"Tag '{tag_name}' has been added to droplet '{','.join(droplet_names)}' successfully.")
 
     # Run Commands
     def do_run(self, line):
@@ -538,7 +567,7 @@ class DOConsole(cmd.Cmd):
         if len(args) == 0:
             print("Usage: run <playbook>")
             return
-        
+
         command = args[0]
         if command == "playbook":
             self.run_playbook(" ".join(args[1:]))
@@ -546,33 +575,34 @@ class DOConsole(cmd.Cmd):
             print(f"Unknown subcommand: {command}")
 
     def run_playbook(self, playbook_path):
-        """Run the active playbook on a droplet."""
+        """Run the active playbook, or the given playbook path, on the target droplet."""
 
         if self.target is None:
-            print("No droplet selected. Use 'use' command to select a droplet.")
+            print("No droplet selected. Use 'set droplet' command to select a droplet.")
             return
-        
+
         if self.target == "all":
-            # make a list of all droplets ip_address
             droplet_ip = ",".join(droplet['Public IP'] for droplet in self.droplets)
         else:
             droplet_ip = self.target['Public IP']
 
-        if not os.path.exists(playbook_path):
+        if not playbook_path:
             if self.active_playbook is None:
                 print("Please set a playbook or provide a path to a playbook.")
                 return
-            playbook_path = os.path.join(self.ansible_playbooks, self.active_playbook)
-
-        ansible_path = shutil.which('ansible-playbook')
-
-        if ansible_path is None:
-            print("Ansible-playbook is not installed. Please install Ansible. Typically 'sudo apt install ansible' on Ubuntu.")
+            playbook_path = self.active_playbook
+        elif not os.path.exists(playbook_path):
+            print(f"Playbook not found: {playbook_path}")
             return
 
-        ansible_command = f"{ansible_path} -i {droplet_ip}, -u root --private-key={self.ssh_key} {playbook_path}"
+        ansible_path = shutil.which('ansible-playbook')
+        if ansible_path is None:
+            print("ansible-playbook is not installed. Please install Ansible. Typically 'sudo apt install ansible' on Ubuntu.")
+            return
 
-        subprocess.run(ansible_command, shell=True)
+        command = [ansible_path, "-i", f"{droplet_ip},", "-u", "root",
+                   f"--private-key={self.ssh_key}", playbook_path]
+        subprocess.run(command)
 
     # Complete methods
     def complete_show(self, text, line, begidx, endidx):
@@ -580,10 +610,10 @@ class DOConsole(cmd.Cmd):
 
     def complete_set(self, text, line, begidx, endidx):
         return self.complete_subcommands('set', text)
-    
+
     def complete_create(self, text, line, begidx, endidx):
         return self.complete_subcommands('create', text)
-    
+
     def complete_add(self, text, line, begidx, endidx):
         return self.complete_subcommands('add', text)
 
@@ -596,89 +626,51 @@ class DOConsole(cmd.Cmd):
         else:
             return [s for s in self.subcommands[command] if s.startswith(text)]
 
-    def update_droplets(self):
-        """
-        Update the list of droplets.
-        """
-
-        droplets = self.manager.get_all_droplets()
-
-        for index, droplet in enumerate(droplets):
-            # get the private IP if available
-            private_ip = None
-            for network in droplet.networks['v4']:
-                if network['type'] == 'private':
-                    private_ip = network['ip_address']
-                    break
-
-            droplet_info = {
-                'ID': droplet.id,
-                'Name': droplet.name,
-                'Status': droplet.status,
-                'Public IP': droplet.ip_address,
-                'Private IP': private_ip,
-                'Created at': droplet.created_at,
-                'Memory': droplet.memory,
-                'vCPUs': droplet.vcpus,
-                'Disk': droplet.disk,
-                'Kernel': droplet.kernel,
-                'Features': droplet.features,
-                'Networks': droplet.networks,
-                'Tags': droplet.tags,
-                'Size': droplet.size,
-            }
-            self.droplets.append(droplet_info)
-
     def do_destroy(self, line):
-        """Destroy the target droplet."""
+        """Destroy the target droplet(s)."""
         if self.target is None:
             print("No droplet selected. Use 'set droplet' command to select a droplet.")
             return
-        
+
         if self.target == "all":
             print("Are you sure you want to destroy all droplets? This action cannot be undone.")
             confirmation = input("Type 'yes' to confirm: ")
-            if confirmation.lower() == "yes":
-                for d in self.droplets:
-                    try:
-                        droplet = self.manager.get_droplet(d['ID'])
-                        droplet.destroy()
-                        print(f"Droplet {droplet.name} has been destroyed.")
-                    except digitalocean.NotFoundError as e:
-                        print(f"Error: DigitalOcean dropplet; {droplet.name} not found.")
-                    except Exception as e:
-                        print(f"An unexpected error occurred while destroying {droplet.name}: {e}")
-                        continue
-                self.update_droplets()  # Refresh droplet status
-                self.prompt = '(DOConsole) '  # Reset prompt
-                self.target = None  # Reset target
-            else:
+            if confirmation.lower() != "yes":
                 print("Droplet destruction cancelled.")
+                return
+
+            for d in self.droplets:
+                try:
+                    self.api.destroy_droplet(d['ID'])
+                    print(f"Droplet {d['Name']} has been destroyed.")
+                except DOAPIError as e:
+                    print(f"An unexpected error occurred while destroying {d['Name']}: {e}")
+
+            self.refresh_droplets()
+            self.prompt = '(DOConsole) '
+            self.target = None
         else:
             confirmation = input(f"Are you sure you want to destroy the droplet {self.target['Name']}? (yes/no) ")
-            if confirmation.lower() == "yes":
-                try:
-                    droplet = self.manager.get_droplet(self.target['ID'])
-                    droplet.destroy()
-                    print(f"Droplet {self.target['Name']} has been destroyed.")
-                except digitalocean.NotFoundError as e:
-                    print(f"Error: DigitalOcean dropplet; {self.target['Name']} not found.")
-                except Exception as e:
-                    print(f"An unexpected error occurred while destroying {self.target['Name']}: {e}")
-                self.update_droplets()  # Refresh droplet status
-                self.prompt = '(DOConsole) '  # Reset prompt
-                self.target = None  # Reset target
-            else:
+            if confirmation.lower() != "yes":
                 print("Droplet destruction cancelled.")
+                return
 
-    ## Start of new features content
+            try:
+                self.api.destroy_droplet(self.target['ID'])
+                print(f"Droplet {self.target['Name']} has been destroyed.")
+            except DOAPIError as e:
+                print(f"An unexpected error occurred while destroying {self.target['Name']}: {e}")
+
+            self.refresh_droplets()
+            self.prompt = '(DOConsole) '
+            self.target = None
 
     def do_ssh(self, line):
         """Start an SSH session to the target droplet."""
         if self.target is None:
-            print("No droplet selected. Use 'use' command to select a droplet.")
+            print("No droplet selected. Use 'set droplet' command to select a droplet.")
             return
-        
+
         if self.target == "all":
             print("Cannot SSH into multiple droplets at once. Please select a single droplet.")
             return
@@ -688,167 +680,77 @@ class DOConsole(cmd.Cmd):
             print("Droplet IP address is not available.")
             return
 
-        ssh_username = 'root'  # Replace with the appropriate username for your droplet
-        ssh_command = f"ssh {ssh_username}@{droplet_ip}"
+        ssh_path = shutil.which('ssh')
+        if ssh_path is None:
+            print("ssh is not installed or not on PATH.")
+            return
+
+        command = [ssh_path, f"root@{droplet_ip}"]
+        if self.ssh_key:
+            command += ["-i", self.ssh_key]
 
         try:
-            subprocess.run(ssh_command, shell=True, check=True)
+            subprocess.run(command, check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error occurred while connecting: {e}")
         except KeyboardInterrupt:
             print("SSH session interrupted.")
 
-    # Utilities for formatting output
-
-    def format_table(self, headers, results=None, preamble=None, footer=None):
-        def calculate_max_widths():
-            max_widths = {}
-            for header, key in headers.items():
-                header_width = len(str(header))
-                value_width = max(len(str(r[key])) for r in results)
-                max_widths[header] = max(header_width, value_width)
-            return max_widths
-
-        def create_format_string(max_widths):
-            spacing = 2
-            return " ".join(f"{{:<{width+spacing}}}" for width in max_widths.values())
-
-        def format_header(format_string):
-            header_str = format_string.format(*headers.keys())
-            return header_str
-
-        def format_data(format_string):
-            data_strs = []
-            for r in results:
-                result_values = [r[key] for key in headers.values()]
-                result_str = format_string.format(*result_values)
-                data_strs.append(result_str)
-            return "\n".join(data_strs)
-
-        output = ""
-
-        if preamble:
-            output += preamble + "\n\n"
-
-        if results:
-            max_widths = calculate_max_widths()
-            format_string = create_format_string(max_widths)
-
-            header_str = format_header(format_string)
-            data_str = format_data(format_string)
-
-            output += header_str + "\n" + data_str
-
-        if footer:
-            if results:
-                output += "\n\n"
-            output += "\n".join(footer)
-
-        return output + "\n"
-
-    def format_single_dict(self, data, preamble=None, footer=None):
-        def calculate_max_widths():
-            max_key_width = max(len(str(key)) for key in data.keys())
-            return max_key_width
-
-        def format_data(max_key_width):
-            spacing = 2
-            lines = []
-            for key, value in data.items():
-                lines.append(f"{key:<{max_key_width + spacing}}{value}")
-            return "\n".join(lines)
-
-        output = ""
-
-        if preamble:
-            output += preamble + "\n\n"  # This correctly places the preamble at the top
-
-        max_key_width = calculate_max_widths()
-        data_str = format_data(max_key_width)
-
-        output += data_str
-
-        if footer:
-            output += "\n\n" + "\n".join(footer)  # Footer will be placed at the bottom
-
-        return output + "\n"
-
-    def format_list_into_columns(self, data, num_columns=None, auto=True):
-        if auto:
-            if num_columns is not None:
-                raise ValueError("Auto mode is enabled, num_columns argument should not be provided")
-            
-            total_items = len(data)
-            
-            if total_items <= 40:
-                num_columns = 1
-            elif total_items <= 80:
-                num_columns = 2
-            elif total_items <= 180:
-                num_columns = 3
-            else:
-                num_columns = 4
-        
-        if num_columns is not None and (num_columns < 1 or num_columns > 4):
-            raise ValueError("Number of columns must be between 1 and 4")
-
-        if num_columns is None:
-            raise ValueError("Number of columns must be specified when auto mode is disabled")
-
-        # Calculate the number of rows needed
-        num_rows = (len(data) + num_columns - 1) // num_columns
-
-        # Create a list of rows, each containing num_columns elements
-        rows = [data[i * num_columns:(i + 1) * num_columns] for i in range(num_rows)]
-
-        # Calculate the maximum width of each column
-        col_widths = [max(len(str(rows[row][col])) for row in range(len(rows)) if col < len(rows[row])) for col in range(num_columns)]
-
-        # Format the rows into columns
-        formatted_rows = []
-        for row in rows:
-            formatted_row = "".join(f"{str(item):<{col_widths[i] + 2}}" for i, item in enumerate(row))
-            formatted_rows.append(formatted_row)
-
-        return "\n".join(formatted_rows)
-
     def do_quit(self, line):
         """Quit the console."""
         return True
-    
+
     def do_exit(self, line):
         """Quit the console."""
         return True
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='DigitalOcean console.')
-    parser.add_argument('-t', '--token', type=str, help='DigitalOcean API token. Defaults to DO_API_TOKEN env var')
-    parser.add_argument('-k', '--key', type=str, default=os.path.expanduser(os.path.join('~', '.ssh', 'id_rsa')), help='Path to the SSH key.')
-    parser.add_argument('--init', action='store_true', help='Run get_status and list_playbooks on startup')
-    parser.add_argument('--playbooks', type=str, help='Path to the Ansible playbooks directory.')
 
-    # Parse arguments
+def resolve_settings(args, env=None):
+    """Resolve token/ssh_key/playbooks_dir with precedence: CLI arg > env var (real or from .env) > default."""
+    env = env if env is not None else os.environ
+    token = args.token or env.get('DO_API_TOKEN')
+    ssh_key = args.key or env.get('DOCONSOLE_SSH_KEY') or os.path.expanduser(os.path.join('~', '.ssh', 'id_rsa'))
+    playbooks_dir = args.playbooks or env.get('DOCONSOLE_PLAYBOOKS_DIR') or os.path.join(os.getcwd(), 'playbooks')
+    return token, ssh_key, playbooks_dir
+
+
+def main():
+    load_dotenv()
+
+    parser = argparse.ArgumentParser(description='DigitalOcean console.')
+    parser.add_argument('-t', '--token', type=str, default=None,
+                         help='DigitalOcean API token. Defaults to DO_API_TOKEN env var or .env file')
+    parser.add_argument('-k', '--key', type=str, default=None,
+                         help='Path to the SSH key. Defaults to DOCONSOLE_SSH_KEY env var/.env, else ~/.ssh/id_rsa')
+    parser.add_argument('--init', action='store_true', help='Show droplets and playbooks on startup')
+    parser.add_argument('--playbooks', type=str, default=None,
+                         help='Path to the Ansible playbooks directory. Defaults to DOCONSOLE_PLAYBOOKS_DIR env var/.env, else ./playbooks')
+
     args = parser.parse_args()
 
-    # Check if token is provided or in environment variables
-    token = args.token or os.environ.get('DO_API_TOKEN')
-
+    token, ssh_key, playbooks_dir = resolve_settings(args)
     if token is None:
-        print("DigitalOcean API token not provided and DO_API_TOKEN environment variable not set.")
+        print("DigitalOcean API token not provided. Set --token, DO_API_TOKEN, or put DO_API_TOKEN in a .env file.")
         sys.exit(1)
 
-    ssh_key = args.key
-
-    if ssh_key is None:
-        print("SSH key not provided.")
-        sys.exit(1)
-
-    playbooks_dir = args.playbooks or os.path.join(os.getcwd(), 'playbooks')
+    console = DOConsole(token, ssh_key, playbooks_dir)
 
     try:
-        DOConsole(token, ssh_key, playbooks_dir, init=args.init).cmdloop()
-    except digitalocean.DataReadError as e:
-        if 'Unable to authenticate' in str(e):
-            print("Authentication failed. Please check the API token.")
-        else:
-            print(f"An error occurred: {e}")
+        console.api.get_account()
+    except DOAPIError as e:
+        print(f"Authentication failed: {e}")
+        sys.exit(1)
+
+    if args.init:
+        print("DigitalOcean Console Initialized")
+        print("-------------------------------\n")
+        console.do_show('droplets')
+        print()
+        console.do_show('playbooks')
+        print()
+
+    console.cmdloop()
+
+
+if __name__ == '__main__':
+    main()
