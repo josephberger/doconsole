@@ -1,0 +1,36 @@
+---
+- name: Transfer the contents of a local directory to a remote directory
+  hosts: all
+  become: true
+  vars_prompt:
+    - name: source_dir
+      prompt: "Enter the local directory whose CONTENTS you want to transfer"
+      private: no
+    - name: destination_dir
+      prompt: "Enter the remote destination directory (leave blank for ~/transferred)"
+      private: no
+      default: ""
+  tasks:
+    - name: Compute the effective destination directory
+      set_fact:
+        effective_destination_dir: "{{ destination_dir if destination_dir | length > 0 else ansible_env.HOME + '/transferred' }}"
+
+    - name: Ensure the destination directory exists
+      file:
+        path: "{{ effective_destination_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+
+    - name: Copy the contents of the source directory to the destination
+      copy:
+        src: "{{ source_dir }}/"
+        dest: "{{ effective_destination_dir }}/"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: preserve
+
+    - name: Report where the contents landed
+      debug:
+        msg: "Contents of {{ source_dir }} have been copied to {{ effective_destination_dir }} on {{ inventory_hostname }}"

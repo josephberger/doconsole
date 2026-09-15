@@ -1,10 +1,13 @@
 import argparse
+import base64
 import cmd
 import glob
+import hashlib
 import os
 import random
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -64,6 +67,21 @@ def _random_droplet_name():
     return f"{adjective}-{noun}-{suffix}"
 
 
+def _ssh_key_fingerprint(public_key_line):
+    """MD5 fingerprint (DigitalOcean's format) of an OpenSSH public key line, or
+    None if it can't be parsed. Used to detect an already-registered key so we
+    never try to re-upload one DigitalOcean would reject as a duplicate."""
+    parts = public_key_line.strip().split()
+    if len(parts) < 2:
+        return None
+    try:
+        key_bytes = base64.b64decode(parts[1])
+    except ValueError:
+        return None
+    digest = hashlib.md5(key_bytes).hexdigest()
+    return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+
+
 def _extract_ips(droplet):
     public_ip = None
     private_ip = None
@@ -116,7 +134,7 @@ class DOConsole(cmd.Cmd):
 
     prompt = '(DOConsole) '
 
-    def __init__(self, token, ssh_key, playbooks_dir=None, profile=None):
+    def __init__(self, token, ssh_key, playbooks_dir=None, profile=None, auto_upload_ssh_key=True):
         super().__init__()
 
         self.subcommands = {
@@ -132,6 +150,7 @@ class DOConsole(cmd.Cmd):
 
         self.profile = profile
         self.config = config.load_config(profile=profile)
+        self.auto_upload_ssh_key = auto_upload_ssh_key
 
         self.token = token or self.config.get("token")
         self.api = DOAPIClient(self.token)
@@ -208,6 +227,55 @@ class DOConsole(cmd.Cmd):
         if 0 <= index < len(self.snapshots):
             return self.snapshots[index]["id"]
         return index
+
+    def _local_pub_key_fingerprint(self):
+        if not self.ssh_key:
+            return None
+        pub_key_path = self.ssh_key + ".pub"
+        if not os.path.isfile(pub_key_path):
+            return None
+        try:
+            with open(pub_key_path, "r") as f:
+                return _ssh_key_fingerprint(f.read())
+        except OSError:
+            return None
+
+    def _ensure_ssh_key_registered(self):
+        """Best-effort: upload the local public key to this DO account if it isn't
+        registered yet. Matches by fingerprint first so we never attempt to
+        re-upload a key that's already there (which DigitalOcean rejects as a
+        duplicate) - that mismatch was the source of the old duplicate-key errors."""
+        if not self.auto_upload_ssh_key:
+            return
+
+        pub_key_path = (self.ssh_key or "") + ".pub"
+        if not self.ssh_key or not os.path.isfile(pub_key_path):
+            return
+
+        try:
+            with open(pub_key_path, "r") as f:
+                pub_key_content = f.read().strip()
+        except OSError:
+            return
+
+        fingerprint = _ssh_key_fingerprint(pub_key_content)
+        if fingerprint is None:
+            return
+
+        try:
+            existing_keys = self.api.list_ssh_keys()
+        except DOAPIError:
+            return
+
+        if any(key.get("fingerprint") == fingerprint for key in existing_keys):
+            return
+
+        key_name = f"doconsole-{socket.gethostname()}"
+        try:
+            self.api.create_ssh_key(key_name, pub_key_content)
+            formatting.success(f"Uploaded local SSH key to DigitalOcean as '{key_name}'.")
+        except DOAPIError as e:
+            formatting.warning(f"Could not upload local SSH key to DigitalOcean: {e}")
 
     def _estimate_running_cost(self):
         try:
@@ -612,6 +680,24 @@ class DOConsole(cmd.Cmd):
         else:
             check("SSH key configured", False, "no SSH key set")
 
+        fingerprint = self._local_pub_key_fingerprint()
+        if fingerprint:
+            try:
+                existing = self.api.list_ssh_keys()
+                registered = any(k.get("fingerprint") == fingerprint for k in existing)
+                if registered:
+                    detail = fingerprint
+                elif self.auto_upload_ssh_key:
+                    detail = "will be auto-uploaded on next 'create droplet'"
+                else:
+                    detail = "auto-upload is off (DOCONSOLE_AUTO_UPLOAD_SSH_KEY=false)"
+                check("SSH key registered with DO", registered, detail)
+            except DOAPIError as e:
+                check("SSH key registered with DO", False, str(e))
+        else:
+            check("Local .pub key file found", False,
+                  f"expected at {self.ssh_key}.pub" if self.ssh_key else "no SSH key configured")
+
         try:
             account = self.api.get_account()
             check("API token valid", True, account.get("email", ""))
@@ -715,6 +801,7 @@ class DOConsole(cmd.Cmd):
             "Default Size": self.size,
             "Default VPC": self.vpc_id or "None",
             "Default SSH-only Firewall": "on" if self.config.get("attach_ssh_firewall", True) else "off",
+            "Auto-upload SSH Key": "on" if self.auto_upload_ssh_key else "off",
         }
         formatting.print_dict(data, preamble="Default Values")
 
@@ -780,6 +867,8 @@ class DOConsole(cmd.Cmd):
             image = self._resolve_snapshot_id(args.from_snapshot)
 
         names = [name] if args.count <= 1 else [f"{name}-{i}" for i in range(1, args.count + 1)]
+
+        self._ensure_ssh_key_registered()
 
         try:
             ssh_key_ids = [key["id"] for key in self.api.list_ssh_keys()]
@@ -1185,13 +1274,20 @@ class DOConsole(cmd.Cmd):
         return True
 
 
+def _parse_bool_env(value, default=True):
+    if value is None or value.strip() == "":
+        return default
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
 def resolve_settings(args, env=None):
-    """Resolve token/ssh_key/playbooks_dir with precedence: CLI arg > env var (real or from .env) > default."""
+    """Resolve settings with precedence: CLI arg > env var (real or from .env) > default."""
     env = env if env is not None else os.environ
     token = args.token or env.get('DO_API_TOKEN')
     ssh_key = args.key or env.get('DOCONSOLE_SSH_KEY') or os.path.expanduser(os.path.join('~', '.ssh', 'id_rsa'))
     playbooks_dir = args.playbooks or env.get('DOCONSOLE_PLAYBOOKS_DIR') or os.path.join(os.getcwd(), 'playbooks')
-    return token, ssh_key, playbooks_dir
+    auto_upload_ssh_key = _parse_bool_env(env.get('DOCONSOLE_AUTO_UPLOAD_SSH_KEY'), default=True)
+    return token, ssh_key, playbooks_dir, auto_upload_ssh_key
 
 
 def main():
@@ -1212,9 +1308,9 @@ def main():
 
     args = parser.parse_args()
 
-    token, ssh_key, playbooks_dir = resolve_settings(args)
+    token, ssh_key, playbooks_dir, auto_upload_ssh_key = resolve_settings(args)
 
-    console = DOConsole(token, ssh_key, playbooks_dir, profile=args.profile)
+    console = DOConsole(token, ssh_key, playbooks_dir, profile=args.profile, auto_upload_ssh_key=auto_upload_ssh_key)
 
     if console.token is None:
         formatting.error("DigitalOcean API token not provided. Set --token, DO_API_TOKEN, put DO_API_TOKEN in a "

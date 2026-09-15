@@ -5,6 +5,7 @@
 ## Features
 
 - **Manage Droplets**: list, create (single or multiple at once), destroy, and tag DigitalOcean droplets.
+- **Auto-uploads your SSH key**: `create droplet` registers `DOCONSOLE_SSH_KEY`'s `.pub` file with your DO account if it isn't there yet (matched by fingerprint, so it never tries to re-upload one that's already registered — that mismatch is what used to cause "duplicate key" errors). On by default; see Configuration below to turn it off.
 - **Select by index, name, or tag**: `set droplet 0`, `set droplet web-1`, or `set droplet tag:web` to act on a group at once.
 - **TTL auto-destroy**: `create droplet foo --ttl 2h` schedules the droplet to destroy itself later, even if you close the console.
 - **Cloud-init support**: `--user-data <path>` bootstraps a droplet at boot without needing SSH/Ansible.
@@ -176,6 +177,7 @@
 - **Command history**: persisted at `~/.doconsole/history` across sessions.
 - **TTL leases**: tracked at `~/.doconsole/leases.json` (see `show leases`).
 - **Profiles**: pass `--profile <name>` to use `~/.doconsole/profiles/<name>.json` instead of the default config file — separate region/size/image/vpc/ssh-key defaults per profile. The token still isn't saved automatically even under a profile; run `set token <value> --save` to save it into the *active* profile (or the default config, if no `--profile` was given) — this is what makes profiles actually useful for switching between DigitalOcean accounts without retyping a token every session.
+- **Auto-upload SSH key**: on by default. Set `DOCONSOLE_AUTO_UPLOAD_SSH_KEY=false` (env var or `.env`) to disable — see `.env.example`. `show doctor` reports whether your local key is currently registered.
 
 ### TTL auto-destroy caveats
 
@@ -186,10 +188,24 @@
 - `doconsole.py` — the `cmd.Cmd` console and CLI entrypoint.
 - `do_api.py` — thin `requests`-based client for the DigitalOcean REST API.
 - `formatting.py` — `rich`-based table/column/status output helpers (color, borders).
-- `config.py` — loads/saves `~/.doconsole/config.json`.
+- `config.py` — loads/saves `~/.doconsole/config.json` (or a named profile under `~/.doconsole/profiles/`).
 - `ttl.py` — TTL lease bookkeeping and the detached auto-destroy watcher process.
 - `pickers.py` — thin `questionary` wrapper for the arrow-key selection menus.
+- `playbooks/` — sample Ansible playbooks, runnable via `run playbook` (see below).
 - `tests/` — pytest suite (formatting is tested directly, `do_api` against mocked HTTP via `responses`, `ttl` with `subprocess.Popen` mocked, and the console via `cmd.Cmd.onecmd` against a fake API client).
+
+## Included playbooks
+
+All playbooks target `hosts: all` and use `-e name=value` for non-interactive overrides of any `vars:` they define, so they work equally well run interactively (`run playbook`, which inherits the console's own terminal, so `vars_prompt` prompts work fine) or scripted via `--exec`/CI with `-e`.
+
+- `add_user.yml` — create a user (prompts for username/password).
+- `esential_tools.yml` — installs `curl`, `vim`, `htop`.
+- `update_droplet.yml` — updates the apt cache.
+- `transfer_folder.yml` — copies a local folder to the remote home directory, nested under its own name (prompts for the folder path).
+- `transfer_directory_contents.yml` — copies the *contents* of a chosen local directory into a chosen remote directory (not nested under the source folder's name), preserving file permissions. Prompts interactively for both the source and destination directory.
+- `install_docker.yml` — installs Docker CE + the Compose plugin on Ubuntu; override `-e docker_users='["someuser"]'` to add non-root users to the `docker` group.
+- `install_nginx.yml` — installs and starts nginx with a placeholder page; override `-e nginx_index_message="..."` to customize it.
+- `create_swap.yml` — creates and enables a swap file (defaults to 1GB, handy on the default `s-1vcpu-1gb` size); override `-e swap_size_gb=2`.
 
 ## Development
 

@@ -1,7 +1,14 @@
+import base64
+
 import pytest
 
 import config as config_module
 import doconsole as dc
+
+
+def _fake_pub_key_line(marker=b"fake-key-material-for-tests"):
+    blob = base64.b64encode(marker).decode()
+    return f"ssh-ed25519 {blob} test@example\n"
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +59,8 @@ class FakeAPI:
         self._next_id = 100
         self.actions = []
         self.resizes = []
+        self.ssh_keys = [{"id": 111, "fingerprint": "existing-fingerprint"}]
+        self.ssh_keys_created = []
 
     def list_droplets(self):
         return self.droplets
@@ -74,7 +83,13 @@ class FakeAPI:
         return [{"slug": "s-1vcpu-1gb", "price_hourly": 0.007, "price_monthly": 4.0}]
 
     def list_ssh_keys(self):
-        return [{"id": 111}]
+        return self.ssh_keys
+
+    def create_ssh_key(self, name, public_key):
+        key = {"id": 222, "name": name, "public_key": public_key, "fingerprint": "created-fingerprint"}
+        self.ssh_keys_created.append(key)
+        self.ssh_keys.append(key)
+        return key
 
     def list_snapshots(self):
         return self.snapshots
@@ -446,6 +461,59 @@ def test_new_console_picks_up_saved_profile_token(tmp_path, monkeypatch):
 
     second = dc.DOConsole(token=None, ssh_key="key", playbooks_dir=str(tmp_path), profile="work")
     assert second.token == "saved-token"
+
+
+def _make_console_with_pub_key(tmp_path, pub_key_line):
+    key_path = tmp_path / "id_ed25519"
+    (tmp_path / "id_ed25519.pub").write_text(pub_key_line)
+    console = dc.DOConsole(token="fake", ssh_key=str(key_path), playbooks_dir=str(tmp_path))
+    console.api = FakeAPI()
+    return console
+
+
+def test_create_droplet_uploads_unregistered_ssh_key(tmp_path):
+    console = _make_console_with_pub_key(tmp_path, _fake_pub_key_line())
+    console.onecmd("create droplet newbox")
+    assert len(console.api.ssh_keys_created) == 1
+    assert console.api.ssh_keys_created[0]["name"].startswith("doconsole-")
+
+
+def test_create_droplet_skips_upload_when_already_registered(tmp_path):
+    pub_key_line = _fake_pub_key_line()
+    fingerprint = dc._ssh_key_fingerprint(pub_key_line)
+    console = _make_console_with_pub_key(tmp_path, pub_key_line)
+    console.api.ssh_keys.append({"id": 333, "fingerprint": fingerprint})
+    console.onecmd("create droplet newbox")
+    assert console.api.ssh_keys_created == []
+
+
+def test_auto_upload_disabled_skips_entirely(tmp_path):
+    console = _make_console_with_pub_key(tmp_path, _fake_pub_key_line())
+    console.auto_upload_ssh_key = False
+    console.onecmd("create droplet newbox")
+    assert console.api.ssh_keys_created == []
+
+
+def test_fingerprint_helper_matches_known_value():
+    # md5 fingerprint of the base64-decoded bytes of "AAAA" is a fixed, known value.
+    fingerprint = dc._ssh_key_fingerprint("ssh-ed25519 AAAA comment")
+    assert fingerprint is not None
+    assert len(fingerprint.split(":")) == 16
+
+
+def test_fingerprint_helper_returns_none_for_garbage():
+    assert dc._ssh_key_fingerprint("not-a-valid-key-line") is None
+    assert dc._ssh_key_fingerprint("ssh-ed25519 not-valid-base64!!!") is None
+
+
+def test_show_doctor_reports_local_key_registration(tmp_path, capsys):
+    pub_key_line = _fake_pub_key_line()
+    fingerprint = dc._ssh_key_fingerprint(pub_key_line)
+    console = _make_console_with_pub_key(tmp_path, pub_key_line)
+    console.api.ssh_keys.append({"id": 333, "fingerprint": fingerprint})
+    console.onecmd("show doctor")
+    out = capsys.readouterr().out
+    assert "SSH key registered with DO" in out
 
 
 def test_watch_stops_on_keyboard_interrupt(tmp_path, monkeypatch, capsys):

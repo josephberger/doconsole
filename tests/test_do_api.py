@@ -192,6 +192,22 @@ def test_ensure_default_firewall_reuses_existing():
 
 
 @responses.activate
+def test_create_ssh_key_posts_name_and_key():
+    captured = {}
+
+    def request_callback(request):
+        captured["body"] = json.loads(request.body)
+        return (201, {}, json.dumps({"ssh_key": {"id": 5, "name": "doconsole-test", "fingerprint": "aa:bb"}}))
+
+    responses.add_callback(responses.POST, f"{BASE}/account/keys", callback=request_callback,
+                            content_type="application/json")
+    client = DOAPIClient("fake-token")
+    key = client.create_ssh_key("doconsole-test", "ssh-ed25519 AAAAC3 comment")
+    assert captured["body"] == {"name": "doconsole-test", "public_key": "ssh-ed25519 AAAAC3 comment"}
+    assert key["id"] == 5
+
+
+@responses.activate
 def test_droplet_action_posts_type():
     captured = {}
 

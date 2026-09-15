@@ -237,5 +237,8 @@ class DOAPIClient:
     def list_ssh_keys(self):
         return self._get_paginated("/account/keys", "ssh_keys")
 
+    def create_ssh_key(self, name, public_key):
+        return self._request("POST", "/account/keys", json={"name": name, "public_key": public_key})["ssh_key"]
+
     def get_account(self):
         return self._request("GET", "/account")["account"]

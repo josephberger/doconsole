@@ -1,0 +1,29 @@
+---
+- name: Install and start Nginx
+  hosts: all
+  become: true
+  vars:
+    nginx_index_message: "Hello from {{ inventory_hostname }}!"
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: true
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+
+    # Override with -e nginx_index_message="whatever you want" to customize
+    # the placeholder page without editing this playbook.
+    - name: Deploy a simple placeholder index page
+      copy:
+        content: "<html><body><h1>{{ nginx_index_message }}</h1></body></html>"
+        dest: /var/www/html/index.html
+        mode: '0644'
+
+    - name: Ensure nginx is enabled and running
+      systemd:
+        name: nginx
+        enabled: true
+        state: started
