@@ -76,7 +76,7 @@
      - Example: `show droplets`
    - **Create Droplet**:
      ```sh
-     create droplet [name] [--count N] [--ttl 2h] [--user-data <path>] [--from-snapshot <id_or_index>] [--no-firewall]
+     create droplet [name] [--count N] [--ttl 2h] [--user-data <path>] [--from-snapshot <id_or_index>] [--no-firewall] [--tags tag1,tag2]
      ```
      - `name` is optional — omit it for a randomly generated `adjective-noun-NN` name.
      - `--count N` creates `<name>-1..<name>-N` in a single API call.
@@ -84,6 +84,7 @@
      - `--user-data <path>` passes a cloud-init script to run at boot.
      - `--from-snapshot <id_or_index>` boots from a snapshot instead of `set image`'s default (index is from `show snapshots`).
      - `--no-firewall` skips attaching the default SSH-only firewall for this create.
+     - `--tags tag1,tag2` sets the tag(s) applied to this droplet (and, if the default firewall is on, what it's targeted with), overriding `DOCONSOLE_DEFAULT_TAG` for this create only — works whether or not a default is configured.
      - Example: `create droplet my-new-droplet --ttl 3h`, or just `create droplet` for a surprise name.
    - **Create Snapshot**:
      ```sh

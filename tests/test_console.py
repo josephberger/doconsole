@@ -677,6 +677,29 @@ def test_create_droplet_with_multiple_default_tags_tags_all(tmp_path):
     assert console.api.tagged == [("doconsole", [100]), ("ssh-only", [100])]
 
 
+def test_create_droplet_tags_flag_used_when_no_default_set(tmp_path):
+    console = make_console(tmp_path)
+    assert console.default_tags == []
+    console.onecmd("create droplet newbox --tags ut99")
+    assert console.api.tags_created == ["ut99"]
+    assert console.api.tagged == [("ut99", [100])]
+
+
+def test_create_droplet_tags_flag_overrides_default(tmp_path):
+    console = make_console(tmp_path)
+    console.default_tags = ["doconsole"]
+    console.onecmd("create droplet newbox --tags ut99,tpot")
+    assert console.api.tags_created == ["ut99", "tpot"]
+    assert console.api.tagged == [("ut99", [100]), ("tpot", [100])]
+
+
+def test_create_droplet_without_tags_flag_falls_back_to_default(tmp_path):
+    console = make_console(tmp_path)
+    console.default_tags = ["doconsole"]
+    console.onecmd("create droplet newbox")
+    assert console.api.tags_created == ["doconsole"]
+
+
 def test_create_droplet_with_default_tag_skips_explicit_firewall_attach(tmp_path):
     console = make_console(tmp_path)
     console.default_tags = ["doconsole"]

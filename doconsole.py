@@ -124,6 +124,9 @@ def _build_create_droplet_parser():
                          help="Snapshot ID, or index from 'show snapshots', to use as the image")
     parser.add_argument("--no-firewall", dest="no_firewall", action="store_true",
                          help="Skip attaching the default SSH-only firewall for this create")
+    parser.add_argument("--tags", default=None,
+                         help="Comma-separated tag(s) to apply to the new droplet(s), overriding "
+                              "DOCONSOLE_DEFAULT_TAG for this create only. Omit to use the configured default.")
     return parser
 
 
@@ -887,7 +890,7 @@ class DOConsole(cmd.Cmd):
 
     def create_droplet(self, line):
         """Create a new droplet. Usage: create droplet [name] [--count N] [--ttl 2h]
-        [--user-data path] [--from-snapshot id_or_index] [--no-firewall]
+        [--user-data path] [--from-snapshot id_or_index] [--no-firewall] [--tags tag1,tag2]
         A random name is generated if none is given."""
 
         try:
@@ -929,6 +932,11 @@ class DOConsole(cmd.Cmd):
         if args.from_snapshot:
             image = self._resolve_snapshot_id(args.from_snapshot)
 
+        if args.tags:
+            tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+        else:
+            tags = self.default_tags
+
         names = [name] if args.count <= 1 else [f"{name}-{i}" for i in range(1, args.count + 1)]
 
         self._ensure_ssh_key_registered()
@@ -954,22 +962,22 @@ class DOConsole(cmd.Cmd):
             formatting.error(f"An error occurred while creating the droplet(s): {e}")
             return
 
-        for tag in self.default_tags:
+        for tag in tags:
             try:
                 self.api.create_tag(tag)
             except DOAPIError as e:
                 if "already exists" not in str(e).lower():
-                    formatting.warning(f"Could not create default tag '{tag}': {e}")
+                    formatting.warning(f"Could not create tag '{tag}': {e}")
             try:
                 self.api.tag_resources(tag, [d["id"] for d in droplets])
             except DOAPIError as e:
-                formatting.warning(f"Could not tag new droplet(s) with default tag '{tag}': {e}")
+                formatting.warning(f"Could not tag new droplet(s) with '{tag}': {e}")
 
         if not args.no_firewall and self.config.get("attach_ssh_firewall", True):
             try:
-                firewall_id = self.api.ensure_default_firewall(tags=self.default_tags)
-                if not self.default_tags:
-                    # No default tags, so the firewall can't auto-apply via tag membership -
+                firewall_id = self.api.ensure_default_firewall(tags=tags)
+                if not tags:
+                    # No tags, so the firewall can't auto-apply via tag membership -
                     # explicitly attach these droplets by id instead.
                     self.api.add_droplets_to_firewall(firewall_id, [d["id"] for d in droplets])
             except DOAPIError as e:
