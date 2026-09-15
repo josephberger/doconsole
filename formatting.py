@@ -1,109 +1,75 @@
-def format_table(headers, results=None, preamble=None, footer=None):
-    def calculate_max_widths():
-        max_widths = {}
-        for header, key in headers.items():
-            header_width = len(str(header))
-            value_width = max(len(str(r[key])) for r in results)
-            max_widths[header] = max(header_width, value_width)
-        return max_widths
+from rich.columns import Columns
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
 
-    def create_format_string(max_widths):
-        spacing = 2
-        return " ".join(f"{{:<{width+spacing}}}" for width in max_widths.values())
+console = Console()
 
-    def format_header(format_string):
-        return format_string.format(*headers.keys())
+STATUS_STYLES = {
+    "active": "green",
+    "new": "yellow",
+    "off": "red",
+    "archive": "red",
+}
 
-    def format_data(format_string):
-        data_strs = []
-        for r in results:
-            result_values = [r[key] for key in headers.values()]
-            data_strs.append(format_string.format(*result_values))
-        return "\n".join(data_strs)
 
-    output = ""
+def _cell(title, value):
+    """Build a Text renderable for a cell. Text() is inserted verbatim (never
+    parsed as markup), so a droplet/tag/snapshot name containing '[' can't be
+    misread as a style tag."""
+    if title == "Status":
+        style = STATUS_STYLES.get(str(value).lower(), "white")
+        return Text(str(value), style=style)
+    return Text(str(value))
 
+
+def print_table(headers, results=None, preamble=None, footer=None):
+    """headers: {column title: data key}. results: list of dicts, each providing every data key."""
     if preamble:
-        output += preamble + "\n\n"
+        console.print(preamble, style="bold cyan", markup=False)
 
     if results:
-        max_widths = calculate_max_widths()
-        format_string = create_format_string(max_widths)
-
-        header_str = format_header(format_string)
-        data_str = format_data(format_string)
-
-        output += header_str + "\n" + data_str
+        table = Table(header_style="bold cyan")
+        for title in headers.keys():
+            table.add_column(str(title))
+        for row in results:
+            table.add_row(*[_cell(title, row[key]) for title, key in headers.items()])
+        console.print(table)
 
     if footer:
-        if results:
-            output += "\n\n"
-        output += "\n".join(footer)
-
-    return output + "\n"
+        for line in footer:
+            console.print(line, style="dim", markup=False)
 
 
-def format_single_dict(data, preamble=None, footer=None):
-    def calculate_max_widths():
-        return max(len(str(key)) for key in data.keys())
-
-    def format_data(max_key_width):
-        spacing = 2
-        lines = []
-        for key, value in data.items():
-            lines.append(f"{key:<{max_key_width + spacing}}{value}")
-        return "\n".join(lines)
-
-    output = ""
-
+def print_dict(data, preamble=None, footer=None):
     if preamble:
-        output += preamble + "\n\n"
+        console.print(preamble, style="bold cyan", markup=False)
 
-    max_key_width = calculate_max_widths()
-    data_str = format_data(max_key_width)
-
-    output += data_str
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="bold")
+    table.add_column()
+    for key, value in data.items():
+        table.add_row(Text(str(key)), _cell(key, value))
+    console.print(table)
 
     if footer:
-        output += "\n\n" + "\n".join(footer)
+        for line in footer:
+            console.print(line, style="dim", markup=False)
 
-    return output + "\n"
+
+def print_columns(items, preamble=None):
+    if preamble:
+        console.print(preamble, style="bold cyan", markup=False)
+    console.print(Columns([Text(str(item)) for item in items]))
 
 
-def format_list_into_columns(data, num_columns=None, auto=True):
-    if auto:
-        if num_columns is not None:
-            raise ValueError("Auto mode is enabled, num_columns argument should not be provided")
+def success(message):
+    console.print(message, style="green", markup=False)
 
-        total_items = len(data)
 
-        if total_items <= 40:
-            num_columns = 1
-        elif total_items <= 80:
-            num_columns = 2
-        elif total_items <= 180:
-            num_columns = 3
-        else:
-            num_columns = 4
+def error(message):
+    console.print(message, style="bold red", markup=False)
 
-    if num_columns is not None and (num_columns < 1 or num_columns > 4):
-        raise ValueError("Number of columns must be between 1 and 4")
 
-    if num_columns is None:
-        raise ValueError("Number of columns must be specified when auto mode is disabled")
-
-    num_rows = (len(data) + num_columns - 1) // num_columns
-
-    rows = [data[i * num_columns:(i + 1) * num_columns] for i in range(num_rows)]
-
-    col_widths = [
-        max(len(str(rows[row][col])) for row in range(len(rows)) if col < len(rows[row]))
-        for col in range(num_columns)
-    ]
-
-    formatted_rows = []
-    for row in rows:
-        formatted_row = "".join(f"{str(item):<{col_widths[i] + 2}}" for i, item in enumerate(row))
-        formatted_rows.append(formatted_row)
-
-    return "\n".join(formatted_rows)
+def warning(message):
+    console.print(message, style="yellow", markup=False)

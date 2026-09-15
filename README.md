@@ -11,6 +11,7 @@
 - **Snapshots**: snapshot a configured droplet, then boot new droplets from it instantly.
 - **Default SSH-only firewall**: new droplets are attached to a shared "SSH only" Cloud Firewall unless turned off.
 - **Cost visibility**: estimated running cost shown in `show droplets`/`show info`.
+- **Color and readable tables**: output is rendered with `rich` — bordered tables, and droplet status colored (green/yellow/red for active/transitional/off). Falls back to plain output automatically when not attached to a real terminal.
 - **Run Ansible Playbooks**: execute Ansible playbooks against a droplet (or a tag/`all` selection).
 - **SSH Access**: SSH into a droplet directly from the console.
 - **Scriptable**: `--exec "cmd1; cmd2"` runs commands non-interactively and exits.
@@ -157,7 +158,7 @@
 
 - `doconsole.py` — the `cmd.Cmd` console and CLI entrypoint.
 - `do_api.py` — thin `requests`-based client for the DigitalOcean REST API.
-- `formatting.py` — table/column output helpers.
+- `formatting.py` — `rich`-based table/column/status output helpers (color, borders).
 - `config.py` — loads/saves `~/.doconsole/config.json`.
 - `ttl.py` — TTL lease bookkeeping and the detached auto-destroy watcher process.
 - `pickers.py` — thin `questionary` wrapper for the arrow-key selection menus.
