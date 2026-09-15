@@ -55,7 +55,7 @@ class FakeAPI:
         self.created_multi = []
         self.firewalls_ensured = 0
         self.firewall_attachments = []
-        self.ensure_default_firewall_tag = None
+        self.ensure_default_firewall_tags = None
         self.snapshots = []
         self.snapshot_created = None
         self._next_id = 100
@@ -124,9 +124,9 @@ class FakeAPI:
         self.firewalls.append(fw)
         return fw
 
-    def ensure_default_firewall(self, name="doconsole-ssh-only", tag=None):
+    def ensure_default_firewall(self, name="doconsole-ssh-only", tags=None):
         self.firewalls_ensured += 1
-        self.ensure_default_firewall_tag = tag
+        self.ensure_default_firewall_tags = tags
         return "fw-1"
 
     def add_droplets_to_firewall(self, firewall_id, droplet_ids):
@@ -663,24 +663,32 @@ def test_add_firewall_by_id(tmp_path):
 
 def test_create_droplet_with_default_tag_tags_new_droplet(tmp_path):
     console = make_console(tmp_path)
-    console.default_tag = "doconsole"
+    console.default_tags = ["doconsole"]
     console.onecmd("create droplet newbox")
     assert console.api.tags_created == ["doconsole"]
     assert console.api.tagged == [("doconsole", [100])]
 
 
+def test_create_droplet_with_multiple_default_tags_tags_all(tmp_path):
+    console = make_console(tmp_path)
+    console.default_tags = ["doconsole", "ssh-only"]
+    console.onecmd("create droplet newbox")
+    assert console.api.tags_created == ["doconsole", "ssh-only"]
+    assert console.api.tagged == [("doconsole", [100]), ("ssh-only", [100])]
+
+
 def test_create_droplet_with_default_tag_skips_explicit_firewall_attach(tmp_path):
     console = make_console(tmp_path)
-    console.default_tag = "doconsole"
+    console.default_tags = ["doconsole"]
     console.onecmd("create droplet newbox")
-    assert console.api.ensure_default_firewall_tag == "doconsole"
+    assert console.api.ensure_default_firewall_tags == ["doconsole"]
     assert console.api.firewalls_ensured == 1
     assert console.api.firewall_attachments == []
 
 
 def test_create_droplet_without_default_tag_still_explicitly_attaches(tmp_path):
     console = make_console(tmp_path)
-    assert console.default_tag is None
+    assert console.default_tags == []
     console.onecmd("create droplet newbox")
-    assert console.api.ensure_default_firewall_tag is None
+    assert console.api.ensure_default_firewall_tags == []
     assert len(console.api.firewall_attachments) == 1

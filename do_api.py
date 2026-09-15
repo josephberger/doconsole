@@ -204,11 +204,11 @@ class DOAPIClient:
     def add_droplets_to_firewall(self, firewall_id, droplet_ids):
         self._request("POST", f"/firewalls/{firewall_id}/droplets", json={"droplet_ids": droplet_ids})
 
-    def ensure_default_firewall(self, name="doconsole-ssh-only", tag=None):
-        """Find-or-create the shared SSH-only firewall. If `tag` is given, the firewall is
-        created targeting that tag (DO applies it to any droplet carrying the tag, present
-        or future - no per-droplet attach call needed); an existing firewall found by name
-        is reused as-is either way."""
+    def ensure_default_firewall(self, name="doconsole-ssh-only", tags=None):
+        """Find-or-create the shared SSH-only firewall. If `tags` is given, the firewall is
+        created targeting those tags (DO applies it to any droplet carrying at least one of
+        them, present or future - no per-droplet attach call needed); an existing firewall
+        found by name is reused as-is either way."""
         for firewall in self.list_firewalls():
             if firewall.get("name") == name:
                 return firewall["id"]
@@ -218,8 +218,7 @@ class DOAPIClient:
             "ports": "22",
             "sources": {"addresses": ["0.0.0.0/0", "::/0"]},
         }]
-        firewall = self.create_firewall(name, inbound_rules, DEFAULT_OUTBOUND_RULES,
-                                         tags=[tag] if tag else None)
+        firewall = self.create_firewall(name, inbound_rules, DEFAULT_OUTBOUND_RULES, tags=tags or None)
         return firewall["id"]
 
     def create_tag(self, name):

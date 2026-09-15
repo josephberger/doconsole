@@ -203,9 +203,25 @@ def test_ensure_default_firewall_with_tag_creates_tag_based_firewall():
     responses.add_callback(responses.POST, f"{BASE}/firewalls", callback=request_callback,
                             content_type="application/json")
     client = DOAPIClient("fake-token")
-    client.ensure_default_firewall(tag="doconsole")
+    client.ensure_default_firewall(tags=["doconsole"])
     assert captured["body"]["tags"] == ["doconsole"]
     assert "droplet_ids" not in captured["body"]
+
+
+@responses.activate
+def test_ensure_default_firewall_with_multiple_tags():
+    captured = {}
+
+    def request_callback(request):
+        captured["body"] = json.loads(request.body)
+        return (202, {}, json.dumps({"firewall": {"id": "fw-1", "name": "doconsole-ssh-only"}}))
+
+    responses.add(responses.GET, f"{BASE}/firewalls", json={"firewalls": [], "links": {}}, status=200)
+    responses.add_callback(responses.POST, f"{BASE}/firewalls", callback=request_callback,
+                            content_type="application/json")
+    client = DOAPIClient("fake-token")
+    client.ensure_default_firewall(tags=["doconsole", "ssh-only"])
+    assert captured["body"]["tags"] == ["doconsole", "ssh-only"]
 
 
 @responses.activate
