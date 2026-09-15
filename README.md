@@ -4,10 +4,18 @@
 
 ## Features
 
-- **Manage Droplets**: list, create, destroy, and tag DigitalOcean droplets.
-- **Run Ansible Playbooks**: execute Ansible playbooks against a droplet.
+- **Manage Droplets**: list, create (single or multiple at once), destroy, and tag DigitalOcean droplets.
+- **Select by index, name, or tag**: `set droplet 0`, `set droplet web-1`, or `set droplet tag:web` to act on a group at once.
+- **TTL auto-destroy**: `create droplet foo --ttl 2h` schedules the droplet to destroy itself later, even if you close the console.
+- **Cloud-init support**: `--user-data <path>` bootstraps a droplet at boot without needing SSH/Ansible.
+- **Snapshots**: snapshot a configured droplet, then boot new droplets from it instantly.
+- **Default SSH-only firewall**: new droplets are attached to a shared "SSH only" Cloud Firewall unless turned off.
+- **Cost visibility**: estimated running cost shown in `show droplets`/`show info`.
+- **Run Ansible Playbooks**: execute Ansible playbooks against a droplet (or a tag/`all` selection).
 - **SSH Access**: SSH into a droplet directly from the console.
-- **Customizable Defaults**: region, size, image, and VPC for new droplets, persisted between sessions.
+- **Scriptable**: `--exec "cmd1; cmd2"` runs commands non-interactively and exits.
+- **Customizable Defaults**: region, size, image, and VPC for new droplets, persisted between sessions, picked via arrow-key menus.
+- **Persistent command history** across sessions.
 
 ## Installation
 
@@ -42,19 +50,35 @@
 2. **Commands Overview**:
    - **Set Configurations**:
      ```sh
-     set <droplet|playbook|token|ssh_key|region|size|image|vpc>
+     set <droplet|playbook|token|ssh_key|region|size|image|vpc|firewall>
      ```
-     - Example: `set droplet 1`
+     - `set droplet <index|name|all|tag:<name>>` — select one droplet by index or exact name, all of them, or every droplet carrying a tag.
+     - `set region`/`set size`/`set image`/`set vpc` open an arrow-key picker (sizes show hourly/monthly price).
+     - `set firewall <on|off>` — toggle whether new droplets get the default SSH-only firewall.
+     - Example: `set droplet web-1`, `set droplet tag:staging`
    - **Show Information**:
      ```sh
-     show <droplets|playbooks|tags|target|info>
+     show <droplets|playbooks|tags|target|info|snapshots|leases>
      ```
+     - `show droplets`/`show info` include an estimated running cost.
+     - `show snapshots` lists your droplet snapshots (feeds `create droplet --from-snapshot`).
+     - `show leases` lists pending TTL auto-destroys.
      - Example: `show droplets`
    - **Create Droplet**:
      ```sh
-     create droplet <name>
+     create droplet <name> [--count N] [--ttl 2h] [--user-data <path>] [--from-snapshot <id_or_index>] [--no-firewall]
      ```
-     - Example: `create droplet my-new-droplet`
+     - `--count N` creates `<name>-1..<name>-N` in a single API call.
+     - `--ttl 2h` (also `90m`, `1d`, `30s`) schedules the droplet to auto-destroy later, even after you close the console — see `show leases`/`cancel ttl` below.
+     - `--user-data <path>` passes a cloud-init script to run at boot.
+     - `--from-snapshot <id_or_index>` boots from a snapshot instead of `set image`'s default (index is from `show snapshots`).
+     - `--no-firewall` skips attaching the default SSH-only firewall for this create.
+     - Example: `create droplet my-new-droplet --ttl 3h`
+   - **Create Snapshot**:
+     ```sh
+     create snapshot <name>
+     ```
+     - Snapshots the single selected target droplet. Example: `create snapshot golden-image`
    - **Add Tag**:
      ```sh
      add tag <tag_name>
@@ -64,10 +88,16 @@
      ```sh
      run playbook <playbook_path>
      ```
+     - Runs against every droplet in the current target (single, `all`, or a tag selection).
      - Example: `run playbook setup.yml`
    - **Destroy Droplet**:
      ```sh
-     destroy
+     destroy [-y|--yes]
+     ```
+     - `--yes` skips the confirmation prompt, for scripting.
+   - **Cancel a pending auto-destroy**:
+     ```sh
+     cancel ttl <name_or_id>
      ```
    - **SSH into Droplet**:
      ```sh
@@ -88,14 +118,25 @@
    run playbook
    ```
 
+3. **Spin up a throwaway box that cleans up after itself**:
+   ```sh
+   create droplet scratch --ttl 2h
+   ```
+
+4. **Script a full create/configure/destroy cycle non-interactively**:
+   ```sh
+   python doconsole.py --exec "create droplet scratch --ttl 1h; run playbook setup.yml; destroy -y"
+   ```
+
 ## Command Details
 
-- **set**: configure the target droplet, active playbook, API token (session-only), SSH key, and the default region/size/image/vpc for new droplets.
-- **show**: display droplets, playbooks, tags, the current target, or console/account info.
-- **create**: create a new droplet with the configured defaults.
+- **set**: configure the target droplet (by index/name/`all`/`tag:x`), active playbook, API token (session-only), SSH key, the default region/size/image/vpc (via arrow-key pickers) for new droplets, and whether the default SSH-only firewall is attached.
+- **show**: display droplets (with estimated cost), playbooks, tags, the current target, console/account info, snapshots, or pending TTL auto-destroys.
+- **create**: create one or more new droplets with the configured defaults (optionally from cloud-init user-data or a snapshot, with a TTL), or snapshot the selected droplet.
 - **add**: add a tag to the selected droplet(s).
-- **run**: run a playbook against the target droplet.
-- **destroy**: destroy the selected droplet(s), with a confirmation prompt.
+- **run**: run a playbook against the target droplet(s).
+- **destroy**: destroy the selected droplet(s), with a confirmation prompt (skippable with `--yes`).
+- **cancel**: cancel a pending TTL auto-destroy.
 - **ssh**: start an SSH session to the target droplet.
 
 ## Configuration
@@ -104,7 +145,13 @@
 - **SSH Key**: path to your SSH private key, used for both `ssh` and `run playbook`. Resolved in order: `--key` flag, `DOCONSOLE_SSH_KEY` environment variable, `DOCONSOLE_SSH_KEY` in `.env`, else `~/.ssh/id_rsa`.
 - **Ansible Playbooks Directory**: resolved in order: `--playbooks` flag, `DOCONSOLE_PLAYBOOKS_DIR` environment variable, `DOCONSOLE_PLAYBOOKS_DIR` in `.env`, else `./playbooks`.
 - **`.env` file**: copy `.env.example` to `.env` to set any of the above without passing flags or exporting real environment variables. A real environment variable of the same name always overrides the value in `.env`. `.env` is listed in `.gitignore` and must never be committed.
-- **Other defaults** (`region`, `size`, `image`, `vpc`): saved to `~/.doconsole/config.json` whenever changed via `set`, so they carry over between sessions.
+- **Other defaults** (`region`, `size`, `image`, `vpc`, `attach_ssh_firewall`): saved to `~/.doconsole/config.json` whenever changed via `set`, so they carry over between sessions.
+- **Command history**: persisted at `~/.doconsole/history` across sessions.
+- **TTL leases**: tracked at `~/.doconsole/leases.json` (see `show leases`).
+
+### TTL auto-destroy caveats
+
+`--ttl` works by spawning a small detached background process that sleeps until the deadline, then destroys the droplet directly via the API — it survives you closing the console. That also means it's an unattended process: if the machine (or WSL instance) restarts before the deadline, the watcher dies silently and the droplet will *not* be auto-destroyed. `show leases` flags this as `STALE` when it detects the watcher process is gone, so you're not left trusting a safety net that's no longer armed.
 
 ## Project layout
 
@@ -112,7 +159,9 @@
 - `do_api.py` — thin `requests`-based client for the DigitalOcean REST API.
 - `formatting.py` — table/column output helpers.
 - `config.py` — loads/saves `~/.doconsole/config.json`.
-- `tests/` — pytest suite (formatting is tested directly, `do_api` against mocked HTTP via `responses`, and the console via `cmd.Cmd.onecmd` against a fake API client).
+- `ttl.py` — TTL lease bookkeeping and the detached auto-destroy watcher process.
+- `pickers.py` — thin `questionary` wrapper for the arrow-key selection menus.
+- `tests/` — pytest suite (formatting is tested directly, `do_api` against mocked HTTP via `responses`, `ttl` with `subprocess.Popen` mocked, and the console via `cmd.Cmd.onecmd` against a fake API client).
 
 ## Development
 

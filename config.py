@@ -3,6 +3,7 @@ import os
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".doconsole")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+HISTORY_PATH = os.path.join(CONFIG_DIR, "history")
 
 DEFAULTS = {
     "region": "nyc1",
@@ -11,6 +12,7 @@ DEFAULTS = {
     "vpc_id": None,
     "ssh_key": None,
     "playbooks_dir": None,
+    "attach_ssh_firewall": True,
 }
 
 

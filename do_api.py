@@ -74,10 +74,8 @@ class DOAPIClient:
     def get_droplet(self, droplet_id):
         return self._request("GET", f"/droplets/{droplet_id}")["droplet"]
 
-    def create_droplet(self, name, region, size, image, ssh_key_ids, vpc_id=None,
-                        wait_timeout=CREATE_DROPLET_TIMEOUT, on_poll=None):
+    def _build_create_body(self, region, size, image, ssh_key_ids, vpc_id=None, user_data=None):
         body = {
-            "name": name,
             "region": region,
             "size": size,
             "image": image,
@@ -86,6 +84,14 @@ class DOAPIClient:
         }
         if vpc_id:
             body["vpc_uuid"] = vpc_id
+        if user_data:
+            body["user_data"] = user_data
+        return body
+
+    def create_droplet(self, name, region, size, image, ssh_key_ids, vpc_id=None, user_data=None,
+                        wait_timeout=CREATE_DROPLET_TIMEOUT, on_poll=None):
+        body = self._build_create_body(region, size, image, ssh_key_ids, vpc_id, user_data)
+        body["name"] = name
 
         droplet = self._request("POST", "/droplets", json=body)["droplet"]
         droplet_id = droplet["id"]
@@ -101,8 +107,102 @@ class DOAPIClient:
                 on_poll()
             time.sleep(2)
 
+    def create_droplets(self, names, region, size, image, ssh_key_ids, vpc_id=None, user_data=None,
+                         wait_timeout=CREATE_DROPLET_TIMEOUT, on_poll=None):
+        body = self._build_create_body(region, size, image, ssh_key_ids, vpc_id, user_data)
+        body["names"] = names
+
+        created = self._request("POST", "/droplets", json=body)["droplets"]
+        droplet_ids = [d["id"] for d in created]
+
+        deadline = time.monotonic() + wait_timeout
+        results = {}
+        while len(results) < len(droplet_ids):
+            for droplet_id in droplet_ids:
+                if droplet_id in results:
+                    continue
+                droplet = self.get_droplet(droplet_id)
+                if droplet.get("status") == "active" and droplet.get("networks", {}).get("v4"):
+                    results[droplet_id] = droplet
+            if len(results) < len(droplet_ids):
+                if time.monotonic() > deadline:
+                    raise DOAPIError(f"Timed out waiting for droplets {names} to become active.")
+                if on_poll:
+                    on_poll()
+                time.sleep(2)
+
+        return [results[droplet_id] for droplet_id in droplet_ids]
+
     def destroy_droplet(self, droplet_id):
         self._request("DELETE", f"/droplets/{droplet_id}")
+
+    def get_action(self, action_id):
+        return self._request("GET", f"/actions/{action_id}")["action"]
+
+    def wait_for_action(self, action_id, timeout=300, on_poll=None):
+        deadline = time.monotonic() + timeout
+        while True:
+            action = self.get_action(action_id)
+            status = action.get("status")
+            if status == "completed":
+                return action
+            if status == "errored":
+                raise DOAPIError(f"Action {action_id} errored.")
+            if time.monotonic() > deadline:
+                raise DOAPIError(f"Timed out waiting for action {action_id}.")
+            if on_poll:
+                on_poll()
+            time.sleep(2)
+
+    def create_snapshot(self, droplet_id, name, wait_timeout=300, on_poll=None):
+        action = self._request("POST", f"/droplets/{droplet_id}/actions",
+                                json={"type": "snapshot", "name": name})["action"]
+        self.wait_for_action(action["id"], timeout=wait_timeout, on_poll=on_poll)
+
+        for snapshot in self.list_droplet_snapshots(droplet_id):
+            if snapshot.get("name") == name:
+                return snapshot
+        raise DOAPIError(f"Snapshot '{name}' completed but could not be found afterward.")
+
+    def list_droplet_snapshots(self, droplet_id):
+        return self._get_paginated(f"/droplets/{droplet_id}/snapshots", "snapshots")
+
+    def list_snapshots(self):
+        return self._get_paginated("/snapshots", "snapshots", params={"resource_type": "droplet"})
+
+    def list_firewalls(self):
+        return self._get_paginated("/firewalls", "firewalls")
+
+    def create_firewall(self, name, inbound_rules, outbound_rules, droplet_ids=None):
+        body = {
+            "name": name,
+            "inbound_rules": inbound_rules,
+            "outbound_rules": outbound_rules,
+        }
+        if droplet_ids:
+            body["droplet_ids"] = droplet_ids
+        return self._request("POST", "/firewalls", json=body)["firewall"]
+
+    def add_droplets_to_firewall(self, firewall_id, droplet_ids):
+        self._request("POST", f"/firewalls/{firewall_id}/droplets", json={"droplet_ids": droplet_ids})
+
+    def ensure_default_firewall(self, name="doconsole-ssh-only"):
+        for firewall in self.list_firewalls():
+            if firewall.get("name") == name:
+                return firewall["id"]
+
+        inbound_rules = [{
+            "protocol": "tcp",
+            "ports": "22",
+            "sources": {"addresses": ["0.0.0.0/0", "::/0"]},
+        }]
+        outbound_rules = [
+            {"protocol": "tcp", "ports": "1-65535", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
+            {"protocol": "udp", "ports": "1-65535", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
+            {"protocol": "icmp", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
+        ]
+        firewall = self.create_firewall(name, inbound_rules, outbound_rules)
+        return firewall["id"]
 
     def create_tag(self, name):
         return self._request("POST", "/tags", json={"name": name}).get("tag", {"name": name})

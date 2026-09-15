@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import responses
 
@@ -81,6 +83,112 @@ def test_create_droplet_times_out():
             name="box", region="nyc1", size="s-1vcpu-1gb", image="ubuntu-24-04-x64",
             ssh_key_ids=[], wait_timeout=0,
         )
+
+
+@responses.activate
+def test_create_droplet_passes_user_data():
+    captured = {}
+
+    def request_callback(request):
+        captured["body"] = json.loads(request.body)
+        return (202, {}, json.dumps({"droplet": {"id": 5, "name": "box", "status": "new"}}))
+
+    responses.add_callback(responses.POST, f"{BASE}/droplets", callback=request_callback,
+                            content_type="application/json")
+    responses.add(
+        responses.GET,
+        f"{BASE}/droplets/5",
+        json={"droplet": {"id": 5, "name": "box", "status": "active",
+                           "networks": {"v4": [{"type": "public", "ip_address": "1.2.3.4"}]}}},
+        status=200,
+    )
+    client = DOAPIClient("fake-token")
+    client.create_droplet(name="box", region="nyc1", size="s-1vcpu-1gb", image="ubuntu-24-04-x64",
+                           ssh_key_ids=[], user_data="#cloud-config\n")
+    assert captured["body"]["user_data"] == "#cloud-config\n"
+
+
+@responses.activate
+def test_create_droplets_bulk_waits_for_all():
+    responses.add(
+        responses.POST,
+        f"{BASE}/droplets",
+        json={"droplets": [{"id": 1, "name": "web-1", "status": "new"}, {"id": 2, "name": "web-2", "status": "new"}]},
+        status=202,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/droplets/1",
+        json={"droplet": {"id": 1, "name": "web-1", "status": "active",
+                           "networks": {"v4": [{"type": "public", "ip_address": "1.1.1.1"}]}}},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/droplets/2",
+        json={"droplet": {"id": 2, "name": "web-2", "status": "active",
+                           "networks": {"v4": [{"type": "public", "ip_address": "2.2.2.2"}]}}},
+        status=200,
+    )
+    client = DOAPIClient("fake-token")
+    droplets = client.create_droplets(names=["web-1", "web-2"], region="nyc1", size="s-1vcpu-1gb",
+                                       image="ubuntu-24-04-x64", ssh_key_ids=[])
+    assert [d["name"] for d in droplets] == ["web-1", "web-2"]
+
+
+@responses.activate
+def test_wait_for_action_completes():
+    responses.add(responses.GET, f"{BASE}/actions/555", json={"action": {"id": 555, "status": "completed"}}, status=200)
+    client = DOAPIClient("fake-token")
+    action = client.wait_for_action(555)
+    assert action["status"] == "completed"
+
+
+@responses.activate
+def test_wait_for_action_errored_raises():
+    responses.add(responses.GET, f"{BASE}/actions/555", json={"action": {"id": 555, "status": "errored"}}, status=200)
+    client = DOAPIClient("fake-token")
+    with pytest.raises(DOAPIError):
+        client.wait_for_action(555)
+
+
+@responses.activate
+def test_create_snapshot_finds_new_snapshot_by_name():
+    responses.add(responses.POST, f"{BASE}/droplets/7/actions",
+                  json={"action": {"id": 900, "status": "completed"}}, status=201)
+    responses.add(responses.GET, f"{BASE}/actions/900", json={"action": {"id": 900, "status": "completed"}}, status=200)
+    responses.add(
+        responses.GET,
+        f"{BASE}/droplets/7/snapshots",
+        json={"snapshots": [{"id": 1, "name": "other"}, {"id": 2, "name": "my-snap"}], "links": {}},
+        status=200,
+    )
+    client = DOAPIClient("fake-token")
+    snapshot = client.create_snapshot(7, "my-snap")
+    assert snapshot["id"] == 2
+
+
+@responses.activate
+def test_ensure_default_firewall_creates_when_missing():
+    responses.add(responses.GET, f"{BASE}/firewalls", json={"firewalls": [], "links": {}}, status=200)
+    responses.add(responses.POST, f"{BASE}/firewalls",
+                  json={"firewall": {"id": "fw-1", "name": "doconsole-ssh-only"}}, status=202)
+    client = DOAPIClient("fake-token")
+    firewall_id = client.ensure_default_firewall()
+    assert firewall_id == "fw-1"
+
+
+@responses.activate
+def test_ensure_default_firewall_reuses_existing():
+    responses.add(
+        responses.GET,
+        f"{BASE}/firewalls",
+        json={"firewalls": [{"id": "fw-9", "name": "doconsole-ssh-only"}], "links": {}},
+        status=200,
+    )
+    client = DOAPIClient("fake-token")
+    firewall_id = client.ensure_default_firewall()
+    assert firewall_id == "fw-9"
 
 
 @responses.activate
