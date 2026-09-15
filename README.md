@@ -150,9 +150,9 @@
 
 ## Examples
 
-1. **Show droplets and playbooks on startup**:
+1. **Skip the startup banner and droplet/playbook listing** (also skips the droplet-list API call that listing makes — useful if you just want a prompt fast):
    ```sh
-   python doconsole.py --token YOUR_DO_TOKEN --init
+   python doconsole.py --token YOUR_DO_TOKEN --quiet
    ```
 
 2. **Run a playbook on a droplet**:

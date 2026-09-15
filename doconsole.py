@@ -1478,7 +1478,9 @@ def main():
                          help='DigitalOcean API token. Defaults to DO_API_TOKEN env var or .env file')
     parser.add_argument('-k', '--key', type=str, default=None,
                          help='Path to the SSH key. Defaults to DOCONSOLE_SSH_KEY env var/.env, else ~/.ssh/id_rsa')
-    parser.add_argument('--init', action='store_true', help='Show droplets and playbooks on startup')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                         help='Skip the startup banner and droplet/playbook listing on launch '
+                              '(also skips the droplet-list API call that listing makes)')
     parser.add_argument('--playbooks', type=str, default=None,
                          help='Path to the Ansible playbooks directory. Defaults to DOCONSOLE_PLAYBOOKS_DIR env var/.env, else ./playbooks')
     parser.add_argument('--exec', dest='exec_commands', default=None,
@@ -1513,7 +1515,7 @@ def main():
                 break
         return
 
-    if args.init:
+    if not args.quiet:
         formatting.console.print(OCTOPUS_BANNER, style="cyan")
         print("DigitalOcean Console Initialized")
         print("-------------------------------\n")
