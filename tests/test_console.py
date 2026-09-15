@@ -692,3 +692,37 @@ def test_create_droplet_without_default_tag_still_explicitly_attaches(tmp_path):
     console.onecmd("create droplet newbox")
     assert console.api.ensure_default_firewall_tags == []
     assert len(console.api.firewall_attachments) == 1
+
+
+def _make_ssh_ready_console(tmp_path, monkeypatch):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet 0")
+    monkeypatch.setattr(dc.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    def fake_run(command, check=True):
+        captured["command"] = command
+
+    monkeypatch.setattr(dc.subprocess, "run", fake_run)
+    return console, captured
+
+
+def test_ssh_default_omits_port_flag(tmp_path, monkeypatch):
+    console, captured = _make_ssh_ready_console(tmp_path, monkeypatch)
+    console.onecmd("ssh")
+    assert "-p" not in captured["command"]
+
+
+def test_ssh_with_long_port_flag(tmp_path, monkeypatch):
+    console, captured = _make_ssh_ready_console(tmp_path, monkeypatch)
+    console.onecmd("ssh --port 64295")
+    idx = captured["command"].index("-p")
+    assert captured["command"][idx + 1] == "64295"
+
+
+def test_ssh_with_short_port_flag(tmp_path, monkeypatch):
+    console, captured = _make_ssh_ready_console(tmp_path, monkeypatch)
+    console.onecmd("ssh -p 2222")
+    idx = captured["command"].index("-p")
+    assert captured["command"][idx + 1] == "2222"

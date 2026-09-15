@@ -141,6 +141,12 @@ def _build_create_firewall_parser():
     return parser
 
 
+def _build_ssh_parser():
+    parser = argparse.ArgumentParser(prog="ssh", add_help=True)
+    parser.add_argument("-p", "--port", type=int, default=None, help="SSH port (default: 22)")
+    return parser
+
+
 class DOConsole(cmd.Cmd):
     """
     DigitalOcean Console.
@@ -1416,13 +1422,25 @@ class DOConsole(cmd.Cmd):
         self.target = None
 
     def do_ssh(self, line):
-        """Start an SSH session to the target droplet."""
+        """Start an SSH session to the target droplet. Usage: ssh [-p|--port <port>]"""
         if self.target is None:
             formatting.error("No droplet selected. Use 'set droplet' command to select a droplet.")
             return
 
         if self.target == "all" or (isinstance(self.target, str) and self.target.startswith("tag:")):
             formatting.error("Cannot SSH into multiple droplets at once. Please select a single droplet.")
+            return
+
+        try:
+            argv = shlex.split(line)
+        except ValueError as e:
+            formatting.error(f"Could not parse arguments: {e}")
+            return
+
+        parser = _build_ssh_parser()
+        try:
+            args = parser.parse_args(argv)
+        except SystemExit:
             return
 
         droplet_ip = self.target.get('Public IP')
@@ -1436,6 +1454,8 @@ class DOConsole(cmd.Cmd):
             return
 
         command = [ssh_path, f"root@{droplet_ip}"]
+        if args.port:
+            command += ["-p", str(args.port)]
         if self.ssh_key:
             command += ["-i", self.ssh_key]
 

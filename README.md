@@ -145,8 +145,9 @@
      - Refreshes the droplet table every 5 seconds (or `interval_seconds`) until Ctrl-C.
    - **SSH into Droplet**:
      ```sh
-     ssh
+     ssh [-p|--port <port>]
      ```
+     - Defaults to port 22. Example: `ssh --port 64295` for a droplet with SSH moved off the default port (e.g. a T-Pot honeypot, which relocates real SSH so port 22 can run the honeypot).
 
 ## Examples
 
