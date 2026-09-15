@@ -4,6 +4,7 @@ import os
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".doconsole")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 HISTORY_PATH = os.path.join(CONFIG_DIR, "history")
+PROFILES_DIR = os.path.join(CONFIG_DIR, "profiles")
 
 DEFAULTS = {
     "region": "nyc1",
@@ -13,13 +14,20 @@ DEFAULTS = {
     "ssh_key": None,
     "playbooks_dir": None,
     "attach_ssh_firewall": True,
+    "token": None,
 }
 
 
-def load_config():
+def _config_path(profile=None):
+    if profile:
+        return os.path.join(PROFILES_DIR, f"{profile}.json")
+    return CONFIG_PATH
+
+
+def load_config(profile=None):
     config = dict(DEFAULTS)
     try:
-        with open(CONFIG_PATH, "r") as f:
+        with open(_config_path(profile), "r") as f:
             data = json.load(f)
         config.update({k: v for k, v in data.items() if k in DEFAULTS})
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -27,8 +35,9 @@ def load_config():
     return config
 
 
-def save_config(config):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+def save_config(config, profile=None):
+    path = _config_path(profile)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     data = {k: config.get(k) for k in DEFAULTS}
-    with open(CONFIG_PATH, "w") as f:
+    with open(path, "w") as f:
         json.dump(data, f, indent=2)

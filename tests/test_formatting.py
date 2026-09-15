@@ -61,3 +61,17 @@ def test_bracketed_content_is_not_treated_as_markup(capsys):
     formatting.error("No droplet named '[test]'.")
     out = capsys.readouterr().out
     assert "[test]" in out
+
+
+def test_ok_issue_status_values_are_recognized(capsys):
+    formatting.print_table({"Status": "status"}, [{"status": "OK"}, {"status": "ISSUE"}])
+    out = capsys.readouterr().out
+    assert "OK" in out
+    assert "ISSUE" in out
+
+
+def test_pre_styled_text_value_passed_through(capsys):
+    from rich.text import Text
+    formatting.print_table({"Status": "status"}, [{"status": Text("SELF-DESTRUCT IN 5s!", style="bold red")}])
+    out = capsys.readouterr().out
+    assert "SELF-DESTRUCT IN 5s!" in out

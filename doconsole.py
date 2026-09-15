@@ -2,10 +2,12 @@ import argparse
 import cmd
 import glob
 import os
+import random
 import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 from dotenv import load_dotenv
 
@@ -14,6 +16,52 @@ import formatting
 import pickers
 import ttl
 from do_api import DOAPIClient, DOAPIError
+
+OCTOPUS_BANNER = r"""
+    .---.
+   /     \
+   \.@-@./
+   /`\_/`\
+  //  _  \\
+ | \     )|_
+/`\_`>  <_/ \
+\__/'---'\__/
+"""
+
+_NAME_ADJECTIVES = [
+    "clever", "brave", "quiet", "swift", "lucky", "sunny", "mighty", "gentle",
+    "curious", "bold", "sneaky", "chunky", "spicy", "dizzy", "feisty", "jolly",
+    "plucky", "zippy",
+]
+_NAME_NOUNS = [
+    "narwhal", "otter", "falcon", "yak", "koala", "walrus", "lynx", "gecko",
+    "puffin", "octopus", "wombat", "ferret", "badger", "heron", "marmot",
+    "toucan", "weasel", "urchin",
+]
+
+_CREATE_MESSAGES = [
+    "Inflating the cloud...",
+    "Waking up the hamsters...",
+    "Feeding the bits...",
+    "Untangling the cables...",
+    "Asking nicely for an IP address...",
+    "Summoning your droplet...",
+    "Convincing electrons to cooperate...",
+]
+_SNAPSHOT_MESSAGES = [
+    "Taking a mental picture...",
+    "Freezing this moment in time...",
+    "Say cheese...",
+    "Preserving your droplet for posterity...",
+    "Bottling this droplet's essence...",
+]
+
+
+def _random_droplet_name():
+    adjective = random.choice(_NAME_ADJECTIVES)
+    noun = random.choice(_NAME_NOUNS)
+    suffix = random.randint(10, 99)
+    return f"{adjective}-{noun}-{suffix}"
 
 
 def _extract_ips(droplet):
@@ -49,7 +97,8 @@ def _droplet_row(droplet):
 
 def _build_create_droplet_parser():
     parser = argparse.ArgumentParser(prog="create droplet", add_help=True)
-    parser.add_argument("name")
+    parser.add_argument("name", nargs="?", default=None,
+                         help="Defaults to a randomly generated name if omitted")
     parser.add_argument("--count", type=int, default=1, help="Create N droplets named <name>-1..<name>-N")
     parser.add_argument("--ttl", default=None, help="Auto-destroy after this long, e.g. 90m, 2h, 1d")
     parser.add_argument("--user-data", dest="user_data", default=None, help="Path to a cloud-init/user-data file")
@@ -67,22 +116,25 @@ class DOConsole(cmd.Cmd):
 
     prompt = '(DOConsole) '
 
-    def __init__(self, token, ssh_key, playbooks_dir=None):
+    def __init__(self, token, ssh_key, playbooks_dir=None, profile=None):
         super().__init__()
 
         self.subcommands = {
             'set': ['droplet', 'playbook', 'token', 'ssh_key', 'region', 'size', 'image', 'vpc', 'firewall'],
-            'show': ['droplets', 'playbooks', 'tags', 'target', 'info', 'snapshots', 'leases'],
+            'show': ['droplets', 'playbooks', 'tags', 'target', 'info', 'snapshots', 'leases', 'doctor'],
             'create': ['droplet', 'snapshot'],
             'add': ['tag'],
             'run': ['playbook'],
             'cancel': ['ttl'],
+            'power': ['on', 'off', 'reboot', 'cycle', 'shutdown'],
+            'watch': ['droplets'],
         }
 
-        self.config = config.load_config()
+        self.profile = profile
+        self.config = config.load_config(profile=profile)
 
-        self.token = token
-        self.api = DOAPIClient(token)
+        self.token = token or self.config.get("token")
+        self.api = DOAPIClient(self.token)
         self.ssh_key = ssh_key or self.config.get("ssh_key")
         self.droplets = []
         self.snapshots = []
@@ -105,7 +157,7 @@ class DOConsole(cmd.Cmd):
             "playbooks_dir": self.ansible_playbooks,
             "attach_ssh_firewall": self.config.get("attach_ssh_firewall", True),
         })
-        config.save_config(self.config)
+        config.save_config(self.config, profile=self.profile)
 
     def preloop(self):
         try:
@@ -250,14 +302,22 @@ class DOConsole(cmd.Cmd):
         except (IndexError, ValueError):
             formatting.error("Invalid index. Please provide a valid index number.")
 
-    def set_token(self, token):
-        """Set the DigitalOcean API token for this session."""
+    def set_token(self, line):
+        """Set the DigitalOcean API token. Usage: set token <value> [--save]"""
+        parts = line.split()
+        save = "--save" in parts
+        token = " ".join(p for p in parts if p != "--save").strip()
         if not token:
             formatting.error("Please provide a valid API token.")
             return
         self.token = token
         self.api = DOAPIClient(token)
-        formatting.success("API token set successfully.")
+        if save:
+            self.config["token"] = token
+            self._save_config()
+            formatting.success(f"API token set and saved to profile '{self.profile or 'default'}'.")
+        else:
+            formatting.success("API token set successfully (session only).")
 
     def set_ssh_key(self, ssh_key_path):
         """Set the SSH key."""
@@ -361,10 +421,10 @@ class DOConsole(cmd.Cmd):
 
     # Show Commands
     def do_show(self, line):
-        """Show: droplets, playbooks, tags, target, info, snapshots, leases."""
+        """Show: droplets, playbooks, tags, target, info, snapshots, leases, doctor."""
         args = line.split()
         if len(args) == 0:
-            formatting.error("Usage: show <droplets|playbooks|tags|target|info|snapshots|leases>")
+            formatting.error("Usage: show <droplets|playbooks|tags|target|info|snapshots|leases|doctor>")
             return
 
         command = args[0]
@@ -382,6 +442,8 @@ class DOConsole(cmd.Cmd):
             self.show_snapshots()
         elif command == "leases":
             self.show_leases()
+        elif command == "doctor":
+            self.show_doctor()
         else:
             formatting.error(f"Unknown subcommand: {command}")
 
@@ -506,11 +568,14 @@ class DOConsole(cmd.Cmd):
         for lease in leases:
             remaining = lease["seconds_remaining"]
             if lease["stale"]:
-                status = "STALE (watcher process is not running - will not auto-destroy)"
+                status = formatting.Text("STALE (watcher process is not running - will not auto-destroy)",
+                                          style="red")
             elif remaining <= 0:
-                status = "expired (destroying soon)"
+                status = formatting.Text("expired (destroying soon)", style="bold red")
+            elif remaining <= 60:
+                status = formatting.Text(f"SELF-DESTRUCT IN {int(remaining)}s!", style="bold red")
             else:
-                status = f"{int(remaining // 60)}m {int(remaining % 60)}s remaining"
+                status = formatting.Text(f"{int(remaining // 60)}m {int(remaining % 60)}s remaining", style="yellow")
             rows.append({
                 "Droplet ID": lease["droplet_id"],
                 "Name": lease["name"],
@@ -527,6 +592,42 @@ class DOConsole(cmd.Cmd):
 
         footer = ["Use 'cancel ttl <name>' to cancel one."]
         formatting.print_table(headers, rows, preamble="Pending Auto-Destroys", footer=footer)
+
+    def show_doctor(self):
+        """Run environment/setup self-checks."""
+        rows = []
+
+        def check(label, ok, detail=""):
+            rows.append({"Check": label, "Status": "OK" if ok else "ISSUE", "Detail": detail})
+
+        ansible_path = shutil.which('ansible-playbook')
+        check("ansible-playbook on PATH", ansible_path is not None,
+              ansible_path or "not found - 'run playbook' will fail")
+
+        ssh_path = shutil.which('ssh')
+        check("ssh on PATH", ssh_path is not None, ssh_path or "not found - 'ssh'/'run playbook' will fail")
+
+        if self.ssh_key:
+            check("SSH key file exists", os.path.isfile(self.ssh_key), self.ssh_key)
+        else:
+            check("SSH key configured", False, "no SSH key set")
+
+        try:
+            account = self.api.get_account()
+            check("API token valid", True, account.get("email", ""))
+        except DOAPIError as e:
+            check("API token valid", False, str(e))
+
+        playbook_files = glob.glob(os.path.join(self.ansible_playbooks, '*.yml'))
+        check("Playbooks directory has .yml files", len(playbook_files) > 0, self.ansible_playbooks)
+
+        if os.name != "nt":
+            has_pkg_manager = any(shutil.which(pm) for pm in ("apt", "apt-get", "dnf", "yum", "apk"))
+            check("Package manager present", has_pkg_manager,
+                  "none found - this may be a minimal/container environment, not a full Linux distro")
+
+        headers = {"Check": "Check", "Status": "Status", "Detail": "Detail"}
+        formatting.print_table(headers, rows, preamble="Environment Doctor")
 
     def show_target(self):
         """Show information about the target droplet(s)."""
@@ -598,6 +699,7 @@ class DOConsole(cmd.Cmd):
         cost_str = f"${cost[0]:.3f}/hr (${cost[1]:.2f}/mo if left running)" if cost else "Unknown"
 
         data = {
+            "Profile": self.profile or "default",
             "Account Email": account.get("email") if account else "Unknown",
             "Target Droplet": self._target_label(),
             "Active Playbook": self.active_playbook,
@@ -634,8 +736,9 @@ class DOConsole(cmd.Cmd):
             formatting.error(f"Unknown subcommand: {command}")
 
     def create_droplet(self, line):
-        """Create a new droplet. Usage: create droplet <name> [--count N] [--ttl 2h]
-        [--user-data path] [--from-snapshot id_or_index] [--no-firewall]"""
+        """Create a new droplet. Usage: create droplet [name] [--count N] [--ttl 2h]
+        [--user-data path] [--from-snapshot id_or_index] [--no-firewall]
+        A random name is generated if none is given."""
 
         try:
             # shlex treats backslash as an escape character, which mangles Windows-style
@@ -652,6 +755,8 @@ class DOConsole(cmd.Cmd):
             args = parser.parse_args(argv)
         except SystemExit:
             return
+
+        name = args.name or _random_droplet_name()
 
         ttl_seconds = None
         if args.ttl:
@@ -674,28 +779,26 @@ class DOConsole(cmd.Cmd):
         if args.from_snapshot:
             image = self._resolve_snapshot_id(args.from_snapshot)
 
-        names = [args.name] if args.count <= 1 else [f"{args.name}-{i}" for i in range(1, args.count + 1)]
+        names = [name] if args.count <= 1 else [f"{name}-{i}" for i in range(1, args.count + 1)]
 
         try:
             ssh_key_ids = [key["id"] for key in self.api.list_ssh_keys()]
-            print("Creating droplet(s). This may take a few minutes.", end="", flush=True)
 
-            def on_poll():
-                print(".", end="", flush=True)
+            with formatting.console.status(random.choice(_CREATE_MESSAGES), spinner="dots") as status:
+                def on_poll():
+                    status.update(random.choice(_CREATE_MESSAGES))
 
-            if args.count <= 1:
-                droplets = [self.api.create_droplet(
-                    name=names[0], region=self.region, size=self.size, image=image,
-                    ssh_key_ids=ssh_key_ids, vpc_id=self.vpc_id, user_data=user_data, on_poll=on_poll,
-                )]
-            else:
-                droplets = self.api.create_droplets(
-                    names=names, region=self.region, size=self.size, image=image,
-                    ssh_key_ids=ssh_key_ids, vpc_id=self.vpc_id, user_data=user_data, on_poll=on_poll,
-                )
-            print()
+                if args.count <= 1:
+                    droplets = [self.api.create_droplet(
+                        name=names[0], region=self.region, size=self.size, image=image,
+                        ssh_key_ids=ssh_key_ids, vpc_id=self.vpc_id, user_data=user_data, on_poll=on_poll,
+                    )]
+                else:
+                    droplets = self.api.create_droplets(
+                        names=names, region=self.region, size=self.size, image=image,
+                        ssh_key_ids=ssh_key_ids, vpc_id=self.vpc_id, user_data=user_data, on_poll=on_poll,
+                    )
         except DOAPIError as e:
-            print()
             formatting.error(f"An error occurred while creating the droplet(s): {e}")
             return
 
@@ -740,15 +843,12 @@ class DOConsole(cmd.Cmd):
 
         droplet = targets[0]
         try:
-            print(f"Creating snapshot '{name}' of '{droplet['Name']}'. This may take a while.", end="", flush=True)
+            with formatting.console.status(random.choice(_SNAPSHOT_MESSAGES), spinner="dots") as status:
+                def on_poll():
+                    status.update(random.choice(_SNAPSHOT_MESSAGES))
 
-            def on_poll():
-                print(".", end="", flush=True)
-
-            snapshot = self.api.create_snapshot(droplet['ID'], name, on_poll=on_poll)
-            print()
+                snapshot = self.api.create_snapshot(droplet['ID'], name, on_poll=on_poll)
         except DOAPIError as e:
-            print()
             formatting.error(f"An error occurred while creating the snapshot: {e}")
             return
 
@@ -853,6 +953,113 @@ class DOConsole(cmd.Cmd):
                    f"--private-key={self.ssh_key}", playbook_path]
         subprocess.run(command)
 
+    # Power Commands
+    def do_power(self, line):
+        """Power: on, off, reboot, cycle, shutdown."""
+        args = line.split()
+        if not args:
+            formatting.error("Usage: power <on|off|reboot|cycle|shutdown>")
+            return
+
+        action_map = {
+            "on": "power_on",
+            "off": "power_off",
+            "reboot": "reboot",
+            "cycle": "power_cycle",
+            "shutdown": "shutdown",
+        }
+        command = args[0]
+        if command not in action_map:
+            formatting.error(f"Unknown subcommand: {command}")
+            return
+
+        if self.target is None:
+            formatting.error("No droplet selected. Use 'set droplet' command to select a droplet.")
+            return
+
+        targets = self._target_droplets()
+        if not targets:
+            formatting.error("No droplets match the current target.")
+            return
+
+        for d in targets:
+            try:
+                self.api.droplet_action(d['ID'], action_map[command])
+                formatting.success(f"Sent '{command}' to droplet {d['Name']}.")
+            except DOAPIError as e:
+                formatting.error(f"Could not {command} {d['Name']}: {e}")
+
+        self.refresh_droplets()
+
+    # Resize
+    def do_resize(self, line):
+        """Resize the target droplet. Usage: resize <size> [--disk]"""
+        parts = line.split()
+        if not parts:
+            formatting.error("Usage: resize <size> [--disk]")
+            return
+
+        size_slug = parts[0]
+        grow_disk = "--disk" in parts[1:]
+
+        if self.target is None:
+            formatting.error("No droplet selected. Use 'set droplet' command to select a droplet.")
+            return
+
+        targets = self._target_droplets()
+        if len(targets) != 1:
+            formatting.error("Select exactly one droplet with 'set droplet' before resizing.")
+            return
+
+        droplet = targets[0]
+        if droplet['Status'] != 'off':
+            formatting.error(
+                f"Droplet must be powered off before resizing. Run 'power off' first (current status: {droplet['Status']}).")
+            return
+
+        if grow_disk:
+            formatting.warning("Disk resize is permanent - it cannot be undone or reversed to a smaller size.")
+
+        suffix = " including disk" if grow_disk else ""
+        confirmation = input(f"Resize '{droplet['Name']}' to '{size_slug}'{suffix}? Type 'yes' to confirm: ")
+        if confirmation.lower() != "yes":
+            print("Resize cancelled.")
+            return
+
+        try:
+            self.api.resize_droplet(droplet['ID'], size_slug, disk=grow_disk)
+            formatting.success(f"Resize to '{size_slug}' requested for '{droplet['Name']}'.")
+        except DOAPIError as e:
+            formatting.error(f"Could not resize droplet: {e}")
+            return
+
+        self.refresh_droplets()
+
+    # Watch
+    def do_watch(self, line):
+        """Watch: droplets. Auto-refreshes until Ctrl-C. Usage: watch droplets [interval_seconds]"""
+        args = line.split()
+        if not args or args[0] != "droplets":
+            formatting.error("Usage: watch droplets [interval_seconds]")
+            return
+
+        interval = 5
+        if len(args) > 1:
+            try:
+                interval = max(1, int(args[1]))
+            except ValueError:
+                formatting.error("Interval must be a whole number of seconds.")
+                return
+
+        print("Watching droplets. Press Ctrl-C to stop.")
+        try:
+            while True:
+                formatting.console.clear()
+                self.show_droplets()
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\nStopped watching.")
+
     # Cancel Commands
     def do_cancel(self, line):
         """Cancel: ttl."""
@@ -889,6 +1096,12 @@ class DOConsole(cmd.Cmd):
 
     def complete_cancel(self, text, line, begidx, endidx):
         return self.complete_subcommands('cancel', text)
+
+    def complete_power(self, text, line, begidx, endidx):
+        return self.complete_subcommands('power', text)
+
+    def complete_watch(self, text, line, begidx, endidx):
+        return self.complete_subcommands('watch', text)
 
     def complete_subcommands(self, command, text):
         if not text:
@@ -994,15 +1207,19 @@ def main():
                          help='Path to the Ansible playbooks directory. Defaults to DOCONSOLE_PLAYBOOKS_DIR env var/.env, else ./playbooks')
     parser.add_argument('--exec', dest='exec_commands', default=None,
                          help='Run semicolon-separated commands non-interactively and exit, e.g. "show droplets; set droplet 0"')
+    parser.add_argument('--profile', type=str, default=None,
+                         help='Use a named profile (separate saved defaults/token) from ~/.doconsole/profiles/<name>.json')
 
     args = parser.parse_args()
 
     token, ssh_key, playbooks_dir = resolve_settings(args)
-    if token is None:
-        formatting.error("DigitalOcean API token not provided. Set --token, DO_API_TOKEN, or put DO_API_TOKEN in a .env file.")
-        sys.exit(1)
 
-    console = DOConsole(token, ssh_key, playbooks_dir)
+    console = DOConsole(token, ssh_key, playbooks_dir, profile=args.profile)
+
+    if console.token is None:
+        formatting.error("DigitalOcean API token not provided. Set --token, DO_API_TOKEN, put DO_API_TOKEN in a "
+                          ".env file, or 'set token ... --save' under a --profile.")
+        sys.exit(1)
 
     try:
         console.api.get_account()
@@ -1020,6 +1237,7 @@ def main():
         return
 
     if args.init:
+        formatting.console.print(OCTOPUS_BANNER, style="cyan")
         print("DigitalOcean Console Initialized")
         print("-------------------------------\n")
         console.do_show('droplets')

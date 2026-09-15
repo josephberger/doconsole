@@ -10,13 +10,18 @@ STATUS_STYLES = {
     "new": "yellow",
     "off": "red",
     "archive": "red",
+    "ok": "green",
+    "issue": "red",
 }
 
 
 def _cell(title, value):
     """Build a Text renderable for a cell. Text() is inserted verbatim (never
     parsed as markup), so a droplet/tag/snapshot name containing '[' can't be
-    misread as a style tag."""
+    misread as a style tag. A value that's already a Text (e.g. a pre-styled
+    dramatic countdown) is passed through untouched."""
+    if isinstance(value, Text):
+        return value
     if title == "Status":
         style = STATUS_STYLES.get(str(value).lower(), "white")
         return Text(str(value), style=style)

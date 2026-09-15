@@ -50,6 +50,8 @@ class FakeAPI:
         self.snapshots = []
         self.snapshot_created = None
         self._next_id = 100
+        self.actions = []
+        self.resizes = []
 
     def list_droplets(self):
         return self.droplets
@@ -114,6 +116,14 @@ class FakeAPI:
             results.append(droplet)
         self.created_multi.append(list(names))
         return results
+
+    def droplet_action(self, droplet_id, action_type):
+        self.actions.append((droplet_id, action_type))
+        return {"id": 1, "type": action_type, "status": "in-progress"}
+
+    def resize_droplet(self, droplet_id, size, disk=False):
+        self.resizes.append((droplet_id, size, disk))
+        return {"id": 2, "type": "resize", "status": "in-progress"}
 
 
 def make_console(tmp_path):
@@ -322,3 +332,129 @@ def test_create_droplet_user_data_path_with_windows_backslashes(tmp_path, monkey
     console = make_console(tmp_path)
     console.onecmd(f"create droplet fromfile --user-data {windows_style_path}")
     assert console.api.created_single[0]["user_data"] == "#!/bin/sh\necho hi\n"
+
+
+def test_create_droplet_with_no_name_generates_a_random_one(tmp_path):
+    console = make_console(tmp_path)
+    console.onecmd("create droplet")
+    assert len(console.api.created_single) == 1
+    generated_name = console.api.created_single[0]["name"]
+    assert generated_name
+    assert "-" in generated_name
+
+
+def test_power_action_on_single_target(tmp_path):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet 0")
+    console.onecmd("power reboot")
+    assert console.api.actions == [(1, "reboot")]
+
+
+def test_power_action_on_tag_target_hits_all_matches(tmp_path):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet tag:prod")
+    console.onecmd("power off")
+    assert set(console.api.actions) == {(1, "power_off"), (2, "power_off")}
+
+
+def test_power_unknown_subcommand_errors(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet 0")
+    console.onecmd("power sideways")
+    out = capsys.readouterr().out
+    assert "Unknown subcommand" in out
+    assert console.api.actions == []
+
+
+def test_resize_refuses_when_droplet_not_off(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet 0")
+    console.onecmd("resize s-2vcpu-2gb")
+    out = capsys.readouterr().out
+    assert "must be powered off" in out
+    assert console.api.resizes == []
+
+
+def test_resize_succeeds_when_off_and_confirmed(tmp_path, monkeypatch):
+    console = make_console(tmp_path)
+    console.api.droplets[0]["status"] = "off"
+    console.refresh_droplets()
+    console.onecmd("set droplet 0")
+    monkeypatch.setattr("builtins.input", lambda _: "yes")
+    console.onecmd("resize s-2vcpu-2gb --disk")
+    assert console.api.resizes == [(1, "s-2vcpu-2gb", True)]
+
+
+def test_resize_requires_single_target(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet all")
+    console.onecmd("resize s-2vcpu-2gb")
+    out = capsys.readouterr().out
+    assert "exactly one droplet" in out
+    assert console.api.resizes == []
+
+
+def test_show_doctor_reports_checks(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.onecmd("show doctor")
+    out = capsys.readouterr().out
+    assert "Environment Doctor" in out
+    assert "API token valid" in out
+
+
+def test_profile_config_isolated_from_default(tmp_path, monkeypatch):
+    import config as config_module
+    monkeypatch.setattr(config_module, "PROFILES_DIR", str(tmp_path / "profiles"))
+
+    console = dc.DOConsole(token="fake", ssh_key="key", playbooks_dir=str(tmp_path), profile="work")
+    console.api = FakeAPI()
+    console.region = "sfo3"
+    console._save_config()
+
+    profile_path = tmp_path / "profiles" / "work.json"
+    assert profile_path.exists()
+
+    default_path = tmp_path / "config.json"
+    assert not default_path.exists()
+
+
+def test_set_token_save_persists_to_profile(tmp_path, monkeypatch):
+    import config as config_module
+    monkeypatch.setattr(config_module, "PROFILES_DIR", str(tmp_path / "profiles"))
+
+    console = dc.DOConsole(token="fake", ssh_key="key", playbooks_dir=str(tmp_path), profile="work")
+    console.api = FakeAPI()
+    console.onecmd("set token real-token --save")
+    assert console.token == "real-token"
+
+    reloaded = config_module.load_config(profile="work")
+    assert reloaded["token"] == "real-token"
+
+
+def test_new_console_picks_up_saved_profile_token(tmp_path, monkeypatch):
+    import config as config_module
+    monkeypatch.setattr(config_module, "PROFILES_DIR", str(tmp_path / "profiles"))
+
+    first = dc.DOConsole(token="fake", ssh_key="key", playbooks_dir=str(tmp_path), profile="work")
+    first.config["token"] = "saved-token"
+    config_module.save_config(first.config, profile="work")
+
+    second = dc.DOConsole(token=None, ssh_key="key", playbooks_dir=str(tmp_path), profile="work")
+    assert second.token == "saved-token"
+
+
+def test_watch_stops_on_keyboard_interrupt(tmp_path, monkeypatch, capsys):
+    console = make_console(tmp_path)
+
+    def fake_sleep(_):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(dc.time, "sleep", fake_sleep)
+    console.onecmd("watch droplets 1")
+    out = capsys.readouterr().out
+    assert "Stopped watching" in out

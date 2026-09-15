@@ -136,6 +136,13 @@ class DOAPIClient:
     def destroy_droplet(self, droplet_id):
         self._request("DELETE", f"/droplets/{droplet_id}")
 
+    def droplet_action(self, droplet_id, action_type):
+        return self._request("POST", f"/droplets/{droplet_id}/actions", json={"type": action_type})["action"]
+
+    def resize_droplet(self, droplet_id, size, disk=False):
+        return self._request("POST", f"/droplets/{droplet_id}/actions",
+                              json={"type": "resize", "size": size, "disk": disk})["action"]
+
     def get_action(self, action_id):
         return self._request("GET", f"/actions/{action_id}")["action"]
 

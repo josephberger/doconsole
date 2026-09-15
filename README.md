@@ -17,6 +17,12 @@
 - **Scriptable**: `--exec "cmd1; cmd2"` runs commands non-interactively and exits.
 - **Customizable Defaults**: region, size, image, and VPC for new droplets, persisted between sessions, picked via arrow-key menus.
 - **Persistent command history** across sessions.
+- **Power actions**: `power on|off|reboot|cycle|shutdown` without destroying the droplet.
+- **Resize**: `resize <size> [--disk]` for an existing (powered-off) droplet.
+- **Live watch**: `watch droplets` auto-refreshes the table until you Ctrl-C.
+- **Self-check**: `show doctor` verifies Ansible/SSH are on PATH, the SSH key exists, the token is valid, and (on Linux/WSL) that a package manager is present.
+- **Profiles**: `--profile <name>` for separate saved defaults, and optionally a separate saved token, per DigitalOcean account.
+- **Random droplet names**: omit the name on `create droplet` for a Docker-style `adjective-noun-NN` name.
 
 ## Installation
 
@@ -59,22 +65,24 @@
      - Example: `set droplet web-1`, `set droplet tag:staging`
    - **Show Information**:
      ```sh
-     show <droplets|playbooks|tags|target|info|snapshots|leases>
+     show <droplets|playbooks|tags|target|info|snapshots|leases|doctor>
      ```
      - `show droplets`/`show info` include an estimated running cost.
      - `show snapshots` lists your droplet snapshots (feeds `create droplet --from-snapshot`).
-     - `show leases` lists pending TTL auto-destroys.
+     - `show leases` lists pending TTL auto-destroys (with a dramatic countdown under a minute).
+     - `show doctor` runs environment self-checks (Ansible/SSH on PATH, SSH key exists, token valid, playbooks present).
      - Example: `show droplets`
    - **Create Droplet**:
      ```sh
-     create droplet <name> [--count N] [--ttl 2h] [--user-data <path>] [--from-snapshot <id_or_index>] [--no-firewall]
+     create droplet [name] [--count N] [--ttl 2h] [--user-data <path>] [--from-snapshot <id_or_index>] [--no-firewall]
      ```
+     - `name` is optional — omit it for a randomly generated `adjective-noun-NN` name.
      - `--count N` creates `<name>-1..<name>-N` in a single API call.
      - `--ttl 2h` (also `90m`, `1d`, `30s`) schedules the droplet to auto-destroy later, even after you close the console — see `show leases`/`cancel ttl` below.
      - `--user-data <path>` passes a cloud-init script to run at boot.
      - `--from-snapshot <id_or_index>` boots from a snapshot instead of `set image`'s default (index is from `show snapshots`).
      - `--no-firewall` skips attaching the default SSH-only firewall for this create.
-     - Example: `create droplet my-new-droplet --ttl 3h`
+     - Example: `create droplet my-new-droplet --ttl 3h`, or just `create droplet` for a surprise name.
    - **Create Snapshot**:
      ```sh
      create snapshot <name>
@@ -100,6 +108,21 @@
      ```sh
      cancel ttl <name_or_id>
      ```
+   - **Power actions**:
+     ```sh
+     power <on|off|reboot|cycle|shutdown>
+     ```
+     - Acts on the current target (single droplet, `all`, or a `tag:x` selection), without destroying anything.
+   - **Resize**:
+     ```sh
+     resize <size> [--disk]
+     ```
+     - Target droplet must already be powered off (`power off` first). `--disk` also grows the disk and is permanent/irreversible — confirmed separately.
+   - **Watch droplets live**:
+     ```sh
+     watch droplets [interval_seconds]
+     ```
+     - Refreshes the droplet table every 5 seconds (or `interval_seconds`) until Ctrl-C.
    - **SSH into Droplet**:
      ```sh
      ssh
@@ -132,10 +155,13 @@
 ## Command Details
 
 - **set**: configure the target droplet (by index/name/`all`/`tag:x`), active playbook, API token (session-only), SSH key, the default region/size/image/vpc (via arrow-key pickers) for new droplets, and whether the default SSH-only firewall is attached.
-- **show**: display droplets (with estimated cost), playbooks, tags, the current target, console/account info, snapshots, or pending TTL auto-destroys.
-- **create**: create one or more new droplets with the configured defaults (optionally from cloud-init user-data or a snapshot, with a TTL), or snapshot the selected droplet.
+- **show**: display droplets (with estimated cost), playbooks, tags, the current target, console/account info, snapshots, pending TTL auto-destroys, or an environment self-check (`doctor`).
+- **create**: create one or more new droplets with the configured defaults (optionally random-named, from cloud-init user-data or a snapshot, with a TTL), or snapshot the selected droplet.
 - **add**: add a tag to the selected droplet(s).
 - **run**: run a playbook against the target droplet(s).
+- **power**: power on/off/reboot/cycle/shutdown the target droplet(s) without destroying them.
+- **resize**: resize the target droplet (must be powered off first).
+- **watch**: auto-refresh `show droplets` until Ctrl-C.
 - **destroy**: destroy the selected droplet(s), with a confirmation prompt (skippable with `--yes`).
 - **cancel**: cancel a pending TTL auto-destroy.
 - **ssh**: start an SSH session to the target droplet.
@@ -149,6 +175,7 @@
 - **Other defaults** (`region`, `size`, `image`, `vpc`, `attach_ssh_firewall`): saved to `~/.doconsole/config.json` whenever changed via `set`, so they carry over between sessions.
 - **Command history**: persisted at `~/.doconsole/history` across sessions.
 - **TTL leases**: tracked at `~/.doconsole/leases.json` (see `show leases`).
+- **Profiles**: pass `--profile <name>` to use `~/.doconsole/profiles/<name>.json` instead of the default config file — separate region/size/image/vpc/ssh-key defaults per profile. The token still isn't saved automatically even under a profile; run `set token <value> --save` to save it into the *active* profile (or the default config, if no `--profile` was given) — this is what makes profiles actually useful for switching between DigitalOcean accounts without retyping a token every session.
 
 ### TTL auto-destroy caveats
 

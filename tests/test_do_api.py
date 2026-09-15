@@ -192,6 +192,37 @@ def test_ensure_default_firewall_reuses_existing():
 
 
 @responses.activate
+def test_droplet_action_posts_type():
+    captured = {}
+
+    def request_callback(request):
+        captured["body"] = json.loads(request.body)
+        return (201, {}, json.dumps({"action": {"id": 1, "status": "in-progress", "type": "reboot"}}))
+
+    responses.add_callback(responses.POST, f"{BASE}/droplets/9/actions", callback=request_callback,
+                            content_type="application/json")
+    client = DOAPIClient("fake-token")
+    action = client.droplet_action(9, "reboot")
+    assert captured["body"] == {"type": "reboot"}
+    assert action["type"] == "reboot"
+
+
+@responses.activate
+def test_resize_droplet_posts_size_and_disk_flag():
+    captured = {}
+
+    def request_callback(request):
+        captured["body"] = json.loads(request.body)
+        return (201, {}, json.dumps({"action": {"id": 2, "status": "in-progress", "type": "resize"}}))
+
+    responses.add_callback(responses.POST, f"{BASE}/droplets/9/actions", callback=request_callback,
+                            content_type="application/json")
+    client = DOAPIClient("fake-token")
+    client.resize_droplet(9, "s-2vcpu-2gb", disk=True)
+    assert captured["body"] == {"type": "resize", "size": "s-2vcpu-2gb", "disk": True}
+
+
+@responses.activate
 def test_pagination_follows_next_link():
     next_url = f"{BASE}/regions-page-2"
     responses.add(
