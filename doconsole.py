@@ -18,7 +18,7 @@ import config
 import formatting
 import pickers
 import ttl
-from do_api import DOAPIClient, DOAPIError
+from do_api import DEFAULT_OUTBOUND_RULES, DOAPIClient, DOAPIError
 
 OCTOPUS_BANNER = r"""
     .---.
@@ -127,6 +127,16 @@ def _build_create_droplet_parser():
     return parser
 
 
+def _build_create_firewall_parser():
+    parser = argparse.ArgumentParser(prog="create firewall", add_help=True)
+    parser.add_argument("name")
+    parser.add_argument("--ports", default="22",
+                         help="Comma-separated inbound TCP ports to allow, e.g. 22,80,443 (default: 22)")
+    parser.add_argument("--attach", action="store_true",
+                         help="Attach the current target droplet(s) to the new firewall")
+    return parser
+
+
 class DOConsole(cmd.Cmd):
     """
     DigitalOcean Console.
@@ -139,8 +149,8 @@ class DOConsole(cmd.Cmd):
 
         self.subcommands = {
             'set': ['droplet', 'playbook', 'token', 'ssh_key', 'region', 'size', 'image', 'vpc', 'firewall'],
-            'show': ['droplets', 'playbooks', 'tags', 'target', 'info', 'snapshots', 'leases', 'doctor'],
-            'create': ['droplet', 'snapshot'],
+            'show': ['droplets', 'playbooks', 'tags', 'target', 'info', 'snapshots', 'leases', 'doctor', 'firewalls'],
+            'create': ['droplet', 'snapshot', 'firewall', 'tag'],
             'add': ['tag'],
             'run': ['playbook'],
             'cancel': ['ttl'],
@@ -489,10 +499,10 @@ class DOConsole(cmd.Cmd):
 
     # Show Commands
     def do_show(self, line):
-        """Show: droplets, playbooks, tags, target, info, snapshots, leases, doctor."""
+        """Show: droplets, playbooks, tags, target, info, snapshots, leases, doctor, firewalls."""
         args = line.split()
         if len(args) == 0:
-            formatting.error("Usage: show <droplets|playbooks|tags|target|info|snapshots|leases|doctor>")
+            formatting.error("Usage: show <droplets|playbooks|tags|target|info|snapshots|leases|doctor|firewalls>")
             return
 
         command = args[0]
@@ -512,6 +522,8 @@ class DOConsole(cmd.Cmd):
             self.show_leases()
         elif command == "doctor":
             self.show_doctor()
+        elif command == "firewalls":
+            self.show_firewalls()
         else:
             formatting.error(f"Unknown subcommand: {command}")
 
@@ -591,6 +603,40 @@ class DOConsole(cmd.Cmd):
             return
 
         formatting.print_columns([tag["name"] for tag in tags], preamble="Available Tags")
+
+    def show_firewalls(self):
+        """Show all firewalls in the account."""
+        try:
+            firewalls = self.api.list_firewalls()
+        except DOAPIError as e:
+            formatting.error(f"Could not fetch firewalls: {e}")
+            return
+
+        if not firewalls:
+            print("No firewalls found.")
+            return
+
+        rows = []
+        for index, fw in enumerate(firewalls):
+            inbound_ports = ",".join(r.get("ports", "?") for r in fw.get("inbound_rules", [])) or "none"
+            rows.append({
+                "Index": index,
+                "ID": fw["id"],
+                "Name": fw["name"],
+                "Status": fw.get("status", "unknown"),
+                "Inbound Ports": inbound_ports,
+                "Droplets": len(fw.get("droplet_ids", [])),
+            })
+
+        headers = {
+            "-": "Index",
+            "ID": "ID",
+            "Name": "Name",
+            "Status": "Status",
+            "Inbound Ports": "Inbound Ports",
+            "Droplets": "Droplets",
+        }
+        formatting.print_table(headers, rows, preamble="Firewalls")
 
     def show_snapshots(self):
         """Show all droplet snapshots in the account."""
@@ -807,10 +853,10 @@ class DOConsole(cmd.Cmd):
 
     # Create Commands
     def do_create(self, line):
-        """ Create: droplet, snapshot."""
+        """ Create: droplet, snapshot, firewall, tag."""
         parts = line.split(maxsplit=1)
         if len(parts) == 0:
-            formatting.error("Usage: create <droplet|snapshot>")
+            formatting.error("Usage: create <droplet|snapshot|firewall|tag>")
             return
 
         command = parts[0]
@@ -819,6 +865,10 @@ class DOConsole(cmd.Cmd):
             self.create_droplet(rest)
         elif command == "snapshot":
             self.create_snapshot(rest.strip())
+        elif command == "firewall":
+            self.create_firewall(rest)
+        elif command == "tag":
+            self.create_tag(rest.strip())
         else:
             formatting.error(f"Unknown subcommand: {command}")
 
@@ -948,6 +998,70 @@ class DOConsole(cmd.Cmd):
             "Size (GB)": snapshot.get("min_disk_size"),
             "Created at": snapshot.get("created_at"),
         }, preamble="New Snapshot")
+
+    def create_firewall(self, line):
+        """Create a firewall. Usage: create firewall <name> [--ports 22,80,443] [--attach]"""
+        try:
+            argv = shlex.split(line)
+        except ValueError as e:
+            formatting.error(f"Could not parse arguments: {e}")
+            return
+
+        parser = _build_create_firewall_parser()
+        try:
+            args = parser.parse_args(argv)
+        except SystemExit:
+            return
+
+        ports = [p.strip() for p in args.ports.split(",") if p.strip()]
+        if not ports:
+            formatting.error("Provide at least one port with --ports.")
+            return
+
+        droplet_ids = None
+        if args.attach:
+            targets = self._target_droplets()
+            if not targets:
+                formatting.error("No droplets match the current target. Select one with 'set droplet', or drop --attach.")
+                return
+            droplet_ids = [d["ID"] for d in targets]
+
+        inbound_rules = [
+            {"protocol": "tcp", "ports": port, "sources": {"addresses": ["0.0.0.0/0", "::/0"]}}
+            for port in ports
+        ]
+
+        try:
+            firewall = self.api.create_firewall(args.name, inbound_rules, DEFAULT_OUTBOUND_RULES,
+                                                 droplet_ids=droplet_ids)
+        except DOAPIError as e:
+            formatting.error(f"Could not create firewall: {e}")
+            return
+
+        formatting.print_dict({
+            "ID": firewall["id"],
+            "Name": firewall["name"],
+            "Status": firewall.get("status", "unknown"),
+            "Inbound Ports": ",".join(ports),
+            "Attached Droplets": len(droplet_ids) if droplet_ids else 0,
+        }, preamble="New Firewall")
+
+    def create_tag(self, name):
+        """Create a tag without assigning it to any droplet. Usage: create tag <name>"""
+        if not name:
+            formatting.error("Please provide a name for the tag.")
+            return
+
+        try:
+            self.api.create_tag(name)
+        except DOAPIError as e:
+            if "already exists" in str(e).lower():
+                formatting.warning(f"Tag '{name}' already exists.")
+                return
+            formatting.error(f"Could not create tag: {e}")
+            return
+
+        formatting.success(f"Tag '{name}' created.")
 
     # Add Commands
     def do_add(self, line):

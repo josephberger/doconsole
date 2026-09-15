@@ -4,6 +4,7 @@ import pytest
 
 import config as config_module
 import doconsole as dc
+from do_api import DOAPIError
 
 
 def _fake_pub_key_line(marker=b"fake-key-material-for-tests"):
@@ -61,6 +62,9 @@ class FakeAPI:
         self.resizes = []
         self.ssh_keys = [{"id": 111, "fingerprint": "existing-fingerprint"}]
         self.ssh_keys_created = []
+        self.firewalls = []
+        self.firewalls_created = []
+        self.tag_create_error = None
 
     def list_droplets(self):
         return self.droplets
@@ -70,6 +74,8 @@ class FakeAPI:
         self.droplets = [d for d in self.droplets if d["id"] != droplet_id]
 
     def create_tag(self, name):
+        if self.tag_create_error:
+            raise DOAPIError(self.tag_create_error)
         self.tags_created.append(name)
         return {"name": name}
 
@@ -101,10 +107,20 @@ class FakeAPI:
         return snap
 
     def list_firewalls(self):
-        return []
+        return self.firewalls
 
     def create_firewall(self, name, inbound_rules, outbound_rules, droplet_ids=None):
-        return {"id": "fw-1", "name": name}
+        fw = {
+            "id": f"fw-{len(self.firewalls_created) + 1}",
+            "name": name,
+            "status": "succeeded",
+            "inbound_rules": inbound_rules,
+            "outbound_rules": outbound_rules,
+            "droplet_ids": droplet_ids or [],
+        }
+        self.firewalls_created.append(fw)
+        self.firewalls.append(fw)
+        return fw
 
     def ensure_default_firewall(self, name="doconsole-ssh-only"):
         self.firewalls_ensured += 1
@@ -526,3 +542,73 @@ def test_watch_stops_on_keyboard_interrupt(tmp_path, monkeypatch, capsys):
     console.onecmd("watch droplets 1")
     out = capsys.readouterr().out
     assert "Stopped watching" in out
+
+
+def test_show_firewalls_empty(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.onecmd("show firewalls")
+    out = capsys.readouterr().out
+    assert "No firewalls found" in out
+
+
+def test_show_firewalls_lists_existing(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.api.firewalls = [{
+        "id": "fw-9", "name": "web-only", "status": "succeeded",
+        "inbound_rules": [{"ports": "80"}, {"ports": "443"}],
+        "droplet_ids": [1, 2],
+    }]
+    console.onecmd("show firewalls")
+    out = capsys.readouterr().out
+    assert "web-only" in out
+    assert "80" in out and "443" in out
+
+
+def test_create_firewall_default_port(tmp_path):
+    console = make_console(tmp_path)
+    console.onecmd("create firewall myfw")
+    assert len(console.api.firewalls_created) == 1
+    fw = console.api.firewalls_created[0]
+    assert fw["name"] == "myfw"
+    assert [r["ports"] for r in fw["inbound_rules"]] == ["22"]
+    assert fw["droplet_ids"] == []
+
+
+def test_create_firewall_custom_ports(tmp_path):
+    console = make_console(tmp_path)
+    console.onecmd("create firewall myfw --ports 22,80,443")
+    fw = console.api.firewalls_created[0]
+    assert [r["ports"] for r in fw["inbound_rules"]] == ["22", "80", "443"]
+
+
+def test_create_firewall_attach_without_target_fails(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.onecmd("create firewall myfw --attach")
+    out = capsys.readouterr().out
+    assert "Select one with 'set droplet'" in out
+    assert console.api.firewalls_created == []
+
+
+def test_create_firewall_attach_with_target(tmp_path):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet tag:prod")
+    console.onecmd("create firewall myfw --attach")
+    fw = console.api.firewalls_created[0]
+    assert set(fw["droplet_ids"]) == {1, 2}
+
+
+def test_create_tag_standalone_without_target(tmp_path):
+    console = make_console(tmp_path)
+    assert console.target is None
+    console.onecmd("create tag standalone-tag")
+    assert console.api.tags_created == ["standalone-tag"]
+
+
+def test_create_tag_already_exists_warns_not_errors(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.api.tag_create_error = "Tag already exists"
+    console.onecmd("create tag dupe")
+    out = capsys.readouterr().out
+    assert "already exists" in out
+    assert console.api.tags_created == []

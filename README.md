@@ -66,12 +66,13 @@
      - Example: `set droplet web-1`, `set droplet tag:staging`
    - **Show Information**:
      ```sh
-     show <droplets|playbooks|tags|target|info|snapshots|leases|doctor>
+     show <droplets|playbooks|tags|target|info|snapshots|leases|doctor|firewalls>
      ```
      - `show droplets`/`show info` include an estimated running cost.
      - `show snapshots` lists your droplet snapshots (feeds `create droplet --from-snapshot`).
      - `show leases` lists pending TTL auto-destroys (with a dramatic countdown under a minute).
      - `show doctor` runs environment self-checks (Ansible/SSH on PATH, SSH key exists, token valid, playbooks present).
+     - `show firewalls` lists firewalls in the account (name, status, inbound ports, attached droplet count).
      - Example: `show droplets`
    - **Create Droplet**:
      ```sh
@@ -89,6 +90,17 @@
      create snapshot <name>
      ```
      - Snapshots the single selected target droplet. Example: `create snapshot golden-image`
+   - **Create Firewall**:
+     ```sh
+     create firewall <name> [--ports 22,80,443] [--attach]
+     ```
+     - `--ports` defaults to `22` (SSH-only). `--attach` attaches the current target droplet(s) (requires one selected via `set droplet`); without it, the firewall is created unattached.
+     - Example: `create firewall web-only --ports 80,443`
+   - **Create Tag**:
+     ```sh
+     create tag <tag_name>
+     ```
+     - Creates a tag without needing a target droplet selected (unlike `add tag`, which also assigns it). Example: `create tag staging`
    - **Add Tag**:
      ```sh
      add tag <tag_name>
@@ -156,8 +168,8 @@
 ## Command Details
 
 - **set**: configure the target droplet (by index/name/`all`/`tag:x`), active playbook, API token (session-only), SSH key, the default region/size/image/vpc (via arrow-key pickers) for new droplets, and whether the default SSH-only firewall is attached.
-- **show**: display droplets (with estimated cost), playbooks, tags, the current target, console/account info, snapshots, pending TTL auto-destroys, or an environment self-check (`doctor`).
-- **create**: create one or more new droplets with the configured defaults (optionally random-named, from cloud-init user-data or a snapshot, with a TTL), or snapshot the selected droplet.
+- **show**: display droplets (with estimated cost), playbooks, tags, the current target, console/account info, snapshots, pending TTL auto-destroys, firewalls, or an environment self-check (`doctor`).
+- **create**: create one or more new droplets with the configured defaults (optionally random-named, from cloud-init user-data or a snapshot, with a TTL), snapshot the selected droplet, create a firewall (optionally attached to the target), or create a standalone tag.
 - **add**: add a tag to the selected droplet(s).
 - **run**: run a playbook against the target droplet(s).
 - **power**: power on/off/reboot/cycle/shutdown the target droplet(s) without destroying them.

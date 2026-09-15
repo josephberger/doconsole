@@ -6,6 +6,15 @@ API_BASE = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT = 30
 CREATE_DROPLET_TIMEOUT = 300
 
+# Allow all outbound traffic - used as the default outbound policy for
+# every firewall this tool creates (the point of these firewalls is
+# restricting inbound access, not outbound).
+DEFAULT_OUTBOUND_RULES = [
+    {"protocol": "tcp", "ports": "1-65535", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
+    {"protocol": "udp", "ports": "1-65535", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
+    {"protocol": "icmp", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
+]
+
 
 class DOAPIError(Exception):
     """Raised for any failure talking to the DigitalOcean API."""
@@ -203,12 +212,7 @@ class DOAPIClient:
             "ports": "22",
             "sources": {"addresses": ["0.0.0.0/0", "::/0"]},
         }]
-        outbound_rules = [
-            {"protocol": "tcp", "ports": "1-65535", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
-            {"protocol": "udp", "ports": "1-65535", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
-            {"protocol": "icmp", "destinations": {"addresses": ["0.0.0.0/0", "::/0"]}},
-        ]
-        firewall = self.create_firewall(name, inbound_rules, outbound_rules)
+        firewall = self.create_firewall(name, inbound_rules, DEFAULT_OUTBOUND_RULES)
         return firewall["id"]
 
     def create_tag(self, name):
