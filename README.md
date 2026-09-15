@@ -119,6 +119,8 @@
      run playbook <playbook_path>
      ```
      - Runs against every droplet in the current target (single, `all`, or a tag selection).
+     - `<playbook_path>` resolves as given (absolute or relative to the current directory), or against the configured playbooks directory if that doesn't exist — so a bare filename like `essential_tools.yml` works without needing `set playbook` first.
+     - Both this and `ssh` disable SSH host-key checking and never persist `known_hosts` — these are ephemeral droplets whose IPs get reused by unrelated future droplets, so pinning a host key causes false "remote host identification has changed" failures more often than it protects against anything.
      - Example: `run playbook setup.yml`
    - **Destroy Droplet**:
      ```sh

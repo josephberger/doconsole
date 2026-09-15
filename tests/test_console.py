@@ -203,6 +203,45 @@ def test_set_droplet_by_name(tmp_path):
     assert console.target["Name"] == "web-2"
 
 
+def test_set_droplet_auto_refreshes_when_cache_empty(tmp_path):
+    # Regression test: a fresh session (e.g. after --quiet, or a fresh --exec run)
+    # never calls refresh_droplets() on its own. 'set droplet' used to fail outright
+    # here even though the droplet genuinely exists.
+    console = make_console(tmp_path)
+    assert console.droplets == []
+    console.onecmd("set droplet web-2")
+    assert console.target["Name"] == "web-2"
+
+
+def test_set_droplet_by_index_auto_refreshes_when_cache_empty(tmp_path):
+    console = make_console(tmp_path)
+    assert console.droplets == []
+    console.onecmd("set droplet 0")
+    assert console.target["Name"] == "web-1"
+
+
+def test_set_droplet_all_auto_refreshes_when_cache_empty(tmp_path):
+    console = make_console(tmp_path)
+    assert console.droplets == []
+    console.onecmd("set droplet all")
+    assert len(console._target_droplets()) == 2
+
+
+def test_set_droplet_does_not_re_fetch_when_cache_already_warm(tmp_path):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    original_list_droplets = console.api.list_droplets
+    calls = []
+
+    def counting_list_droplets():
+        calls.append(1)
+        return original_list_droplets()
+
+    console.api.list_droplets = counting_list_droplets
+    console.onecmd("set droplet web-1")
+    assert calls == []
+
+
 def test_set_droplet_by_unknown_name_leaves_target_unset(tmp_path, capsys):
     console = make_console(tmp_path)
     console.refresh_droplets()
@@ -749,3 +788,71 @@ def test_ssh_with_short_port_flag(tmp_path, monkeypatch):
     console.onecmd("ssh -p 2222")
     idx = captured["command"].index("-p")
     assert captured["command"][idx + 1] == "2222"
+
+
+def test_ssh_disables_strict_host_key_checking(tmp_path, monkeypatch):
+    # Regression: these droplets are ephemeral and IPs get reused by unrelated future
+    # droplets, so a pinned host key causes false "host identification changed" failures.
+    console, captured = _make_ssh_ready_console(tmp_path, monkeypatch)
+    console.onecmd("ssh")
+    command = captured["command"]
+    assert "StrictHostKeyChecking=no" in command
+    assert "UserKnownHostsFile=/dev/null" in command
+
+
+def _make_run_playbook_ready_console(tmp_path, monkeypatch):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet 0")
+    monkeypatch.setattr(dc.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    def fake_run(command):
+        captured["command"] = command
+
+    monkeypatch.setattr(dc.subprocess, "run", fake_run)
+    return console, captured
+
+
+def test_run_playbook_disables_strict_host_key_checking(tmp_path, monkeypatch):
+    console, captured = _make_run_playbook_ready_console(tmp_path, monkeypatch)
+    playbook = tmp_path / "site.yml"
+    playbook.write_text("---\n")
+    console.onecmd(f"run playbook {playbook}")
+    joined = " ".join(captured["command"])
+    assert "StrictHostKeyChecking=no" in joined
+    assert "UserKnownHostsFile=/dev/null" in joined
+
+
+def test_run_playbook_resolves_bare_filename_against_playbooks_dir(tmp_path, monkeypatch):
+    console, captured = _make_run_playbook_ready_console(tmp_path, monkeypatch)
+    playbook = tmp_path / "essential_tools.yml"
+    playbook.write_text("---\n")
+    console.onecmd("run playbook essential_tools.yml")
+    assert str(playbook) in captured["command"]
+
+
+def test_run_playbook_bare_filename_not_found_anywhere_errors(tmp_path, monkeypatch, capsys):
+    console, captured = _make_run_playbook_ready_console(tmp_path, monkeypatch)
+    console.onecmd("run playbook does-not-exist.yml")
+    out = capsys.readouterr().out
+    assert "Playbook not found" in out
+    assert "command" not in captured
+
+
+def test_run_playbook_explicit_path_still_works(tmp_path, monkeypatch):
+    console, captured = _make_run_playbook_ready_console(tmp_path, monkeypatch)
+    playbook = tmp_path / "explicit.yml"
+    playbook.write_text("---\n")
+    console.onecmd(f"run playbook {playbook}")
+    assert str(playbook) in captured["command"]
+
+
+def test_set_playbook_auto_refreshes_without_prior_show(tmp_path):
+    # Regression: a fresh session never calls show_playbooks()/refresh_playbooks() on
+    # its own, so 'set playbook <index>' used to fail even with real files present.
+    console = make_console(tmp_path)
+    (tmp_path / "site.yml").write_text("---\n")
+    assert console.playbooks == []
+    console.onecmd("set playbook 0")
+    assert console.active_playbook == str(tmp_path / "site.yml")

@@ -353,6 +353,11 @@ class DOConsole(cmd.Cmd):
             formatting.error("Usage: set droplet <index|name|all|tag:<name>>")
             return
 
+        if not self.droplets:
+            # Nothing loaded yet this session (e.g. --quiet, or a fresh --exec run) -
+            # refresh once so index/name/tag lookups below have something to search.
+            self.refresh_droplets()
+
         if selector == "all":
             self.target = "all"
             self.prompt = '(DOConsole) all-droplets> '
@@ -388,6 +393,7 @@ class DOConsole(cmd.Cmd):
 
     def set_playbook(self, index):
         """Set the active playbook by index."""
+        self.refresh_playbooks()
         try:
             index = int(index)
             self.active_playbook = self.playbooks[index]
@@ -580,12 +586,17 @@ class DOConsole(cmd.Cmd):
 
         formatting.print_table(headers, droplet_list, preamble="Droplet Status", footer=footer)
 
+    def refresh_playbooks(self):
+        """Refresh self.playbooks from the playbooks directory. Cheap (local glob), so this
+        is always safe to call before looking anything up by index."""
+        self.playbooks = glob.glob(os.path.join(self.ansible_playbooks, '*.yml'))
+
     def show_playbooks(self):
         """Show all available Ansible playbooks."""
-        playbook_files = glob.glob(os.path.join(self.ansible_playbooks, '*.yml'))
+        self.refresh_playbooks()
 
         playbooks = []
-        for index, playbook in enumerate(playbook_files):
+        for index, playbook in enumerate(self.playbooks):
             playbooks.append({
                 "Index": index,
                 "Playbook": os.path.basename(playbook)
@@ -602,8 +613,6 @@ class DOConsole(cmd.Cmd):
             footer = None
 
         formatting.print_table(headers, playbooks, preamble="Available Playbooks", footer=footer)
-
-        self.playbooks = playbook_files
 
     def show_tags(self):
         """Show all available tags."""
@@ -1225,16 +1234,26 @@ class DOConsole(cmd.Cmd):
                 return
             playbook_path = self.active_playbook
         elif not os.path.exists(playbook_path):
-            formatting.error(f"Playbook not found: {playbook_path}")
-            return
+            in_playbooks_dir = os.path.join(self.ansible_playbooks, playbook_path)
+            if os.path.exists(in_playbooks_dir):
+                playbook_path = in_playbooks_dir
+            else:
+                formatting.error(f"Playbook not found: {playbook_path}")
+                return
 
         ansible_path = shutil.which('ansible-playbook')
         if ansible_path is None:
             formatting.error("ansible-playbook is not installed. Please install Ansible. Typically 'sudo apt install ansible' on Ubuntu.")
             return
 
+        # These are ephemeral, frequently-recreated droplets - a destroyed droplet's IP
+        # gets reused by a completely different future droplet, so pinning/persisting a
+        # host key here does more harm (false "host identification changed" failures)
+        # than good. Route known_hosts to /dev/null so every run starts fresh.
         command = [ansible_path, "-i", f"{droplet_ip},", "-u", "root",
-                   f"--private-key={self.ssh_key}", playbook_path]
+                   f"--private-key={self.ssh_key}",
+                   "--ssh-common-args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+                   playbook_path]
         subprocess.run(command)
 
     # Power Commands
@@ -1461,7 +1480,11 @@ class DOConsole(cmd.Cmd):
             formatting.error("ssh is not installed or not on PATH.")
             return
 
-        command = [ssh_path, f"root@{droplet_ip}"]
+        # Same reasoning as run_playbook: these droplets are ephemeral and their IPs get
+        # reused by unrelated future droplets, so pinning a host key here causes false
+        # "host identification changed" failures more often than it protects anything.
+        command = [ssh_path, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                   f"root@{droplet_ip}"]
         if args.port:
             command += ["-p", str(args.port)]
         if self.ssh_key:
