@@ -1,5 +1,5 @@
 ---
-- name: Essential Tools and Public IP
+- name: Install Essential Tools
   hosts: all
   become: true
   tasks:

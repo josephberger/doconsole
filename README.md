@@ -221,8 +221,8 @@
 All playbooks target `hosts: all` and use `-e name=value` for non-interactive overrides of any `vars:` they define, so they work equally well run interactively (`run playbook`, which inherits the console's own terminal, so `vars_prompt` prompts work fine) or scripted via `--exec`/CI with `-e`.
 
 - `add_user.yml` — create a user (prompts for username/password).
-- `esential_tools.yml` — installs `curl`, `vim`, `htop`.
-- `update_droplet.yml` — updates the apt cache.
+- `essential_tools.yml` — installs `curl`, `vim`, `htop`.
+- `update_droplet.yml` — refreshes the apt cache and upgrades all packages.
 - `transfer_folder.yml` — copies a local folder to the remote home directory, nested under its own name (prompts for the folder path).
 - `transfer_directory_contents.yml` — copies the *contents* of a chosen local directory into a chosen remote directory (not nested under the source folder's name), preserving file permissions. Prompts interactively for both the source and destination directory.
 - `install_docker.yml` — installs Docker CE + the Compose plugin on Ubuntu; override `-e docker_users='["someuser"]'` to add non-root users to the `docker` group.
