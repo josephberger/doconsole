@@ -55,6 +55,7 @@ class FakeAPI:
         self.created_multi = []
         self.firewalls_ensured = 0
         self.firewall_attachments = []
+        self.ensure_default_firewall_tag = None
         self.snapshots = []
         self.snapshot_created = None
         self._next_id = 100
@@ -109,7 +110,7 @@ class FakeAPI:
     def list_firewalls(self):
         return self.firewalls
 
-    def create_firewall(self, name, inbound_rules, outbound_rules, droplet_ids=None):
+    def create_firewall(self, name, inbound_rules, outbound_rules, droplet_ids=None, tags=None):
         fw = {
             "id": f"fw-{len(self.firewalls_created) + 1}",
             "name": name,
@@ -117,13 +118,15 @@ class FakeAPI:
             "inbound_rules": inbound_rules,
             "outbound_rules": outbound_rules,
             "droplet_ids": droplet_ids or [],
+            "tags": tags or [],
         }
         self.firewalls_created.append(fw)
         self.firewalls.append(fw)
         return fw
 
-    def ensure_default_firewall(self, name="doconsole-ssh-only"):
+    def ensure_default_firewall(self, name="doconsole-ssh-only", tag=None):
         self.firewalls_ensured += 1
+        self.ensure_default_firewall_tag = tag
         return "fw-1"
 
     def add_droplets_to_firewall(self, firewall_id, droplet_ids):
@@ -612,3 +615,72 @@ def test_create_tag_already_exists_warns_not_errors(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "already exists" in out
     assert console.api.tags_created == []
+
+
+def test_create_firewall_with_tag(tmp_path):
+    console = make_console(tmp_path)
+    console.onecmd("create firewall myfw --tag web")
+    fw = console.api.firewalls_created[0]
+    assert fw["tags"] == ["web"]
+
+
+def test_add_firewall_requires_target(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.api.firewalls = [{"id": "fw-1", "name": "myfw"}]
+    console.onecmd("add firewall myfw")
+    out = capsys.readouterr().out
+    assert "No droplet selected" in out
+    assert console.api.firewall_attachments == []
+
+
+def test_add_firewall_unknown_name_errors(tmp_path, capsys):
+    console = make_console(tmp_path)
+    console.refresh_droplets()
+    console.onecmd("set droplet 0")
+    console.onecmd("add firewall nonexistent")
+    out = capsys.readouterr().out
+    assert "No firewall named" in out
+    assert console.api.firewall_attachments == []
+
+
+def test_add_firewall_by_name_attaches_target(tmp_path):
+    console = make_console(tmp_path)
+    console.api.firewalls = [{"id": "fw-42", "name": "web-only"}]
+    console.refresh_droplets()
+    console.onecmd("set droplet tag:prod")
+    console.onecmd("add firewall web-only")
+    assert console.api.firewall_attachments == [("fw-42", [1, 2])]
+
+
+def test_add_firewall_by_id(tmp_path):
+    console = make_console(tmp_path)
+    console.api.firewalls = [{"id": "fw-42", "name": "web-only"}]
+    console.refresh_droplets()
+    console.onecmd("set droplet 0")
+    console.onecmd("add firewall fw-42")
+    assert console.api.firewall_attachments == [("fw-42", [1])]
+
+
+def test_create_droplet_with_default_tag_tags_new_droplet(tmp_path):
+    console = make_console(tmp_path)
+    console.default_tag = "doconsole"
+    console.onecmd("create droplet newbox")
+    assert console.api.tags_created == ["doconsole"]
+    assert console.api.tagged == [("doconsole", [100])]
+
+
+def test_create_droplet_with_default_tag_skips_explicit_firewall_attach(tmp_path):
+    console = make_console(tmp_path)
+    console.default_tag = "doconsole"
+    console.onecmd("create droplet newbox")
+    assert console.api.ensure_default_firewall_tag == "doconsole"
+    assert console.api.firewalls_ensured == 1
+    assert console.api.firewall_attachments == []
+
+
+def test_create_droplet_without_default_tag_still_explicitly_attaches(tmp_path):
+    console = make_console(tmp_path)
+    assert console.default_tag is None
+    console.onecmd("create droplet newbox")
+    assert console.api.ensure_default_firewall_tag is None
+    assert len(console.api.firewall_attachments) == 1

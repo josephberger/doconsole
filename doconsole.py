@@ -134,6 +134,9 @@ def _build_create_firewall_parser():
                          help="Comma-separated inbound TCP ports to allow, e.g. 22,80,443 (default: 22)")
     parser.add_argument("--attach", action="store_true",
                          help="Attach the current target droplet(s) to the new firewall")
+    parser.add_argument("--tag", default=None,
+                         help="Target every droplet carrying this tag, present or future (DO's native "
+                              "tag-based firewall targeting - no per-droplet attach needed)")
     return parser
 
 
@@ -144,14 +147,15 @@ class DOConsole(cmd.Cmd):
 
     prompt = '(DOConsole) '
 
-    def __init__(self, token, ssh_key, playbooks_dir=None, profile=None, auto_upload_ssh_key=True):
+    def __init__(self, token, ssh_key, playbooks_dir=None, profile=None, auto_upload_ssh_key=True,
+                 default_tag=None):
         super().__init__()
 
         self.subcommands = {
             'set': ['droplet', 'playbook', 'token', 'ssh_key', 'region', 'size', 'image', 'vpc', 'firewall'],
             'show': ['droplets', 'playbooks', 'tags', 'target', 'info', 'snapshots', 'leases', 'doctor', 'firewalls'],
             'create': ['droplet', 'snapshot', 'firewall', 'tag'],
-            'add': ['tag'],
+            'add': ['tag', 'firewall'],
             'run': ['playbook'],
             'cancel': ['ttl'],
             'power': ['on', 'off', 'reboot', 'cycle', 'shutdown'],
@@ -161,6 +165,7 @@ class DOConsole(cmd.Cmd):
         self.profile = profile
         self.config = config.load_config(profile=profile)
         self.auto_upload_ssh_key = auto_upload_ssh_key
+        self.default_tag = default_tag
 
         self.token = token or self.config.get("token")
         self.api = DOAPIClient(self.token)
@@ -848,6 +853,7 @@ class DOConsole(cmd.Cmd):
             "Default VPC": self.vpc_id or "None",
             "Default SSH-only Firewall": "on" if self.config.get("attach_ssh_firewall", True) else "off",
             "Auto-upload SSH Key": "on" if self.auto_upload_ssh_key else "off",
+            "Default Tag": self.default_tag or "none",
         }
         formatting.print_dict(data, preamble="Default Values")
 
@@ -941,10 +947,24 @@ class DOConsole(cmd.Cmd):
             formatting.error(f"An error occurred while creating the droplet(s): {e}")
             return
 
+        if self.default_tag:
+            try:
+                self.api.create_tag(self.default_tag)
+            except DOAPIError as e:
+                if "already exists" not in str(e).lower():
+                    formatting.warning(f"Could not create default tag '{self.default_tag}': {e}")
+            try:
+                self.api.tag_resources(self.default_tag, [d["id"] for d in droplets])
+            except DOAPIError as e:
+                formatting.warning(f"Could not tag new droplet(s) with default tag '{self.default_tag}': {e}")
+
         if not args.no_firewall and self.config.get("attach_ssh_firewall", True):
             try:
-                firewall_id = self.api.ensure_default_firewall()
-                self.api.add_droplets_to_firewall(firewall_id, [d["id"] for d in droplets])
+                firewall_id = self.api.ensure_default_firewall(tag=self.default_tag)
+                if not self.default_tag:
+                    # No default tag, so the firewall can't auto-apply via tag membership -
+                    # explicitly attach these droplets by id instead.
+                    self.api.add_droplets_to_firewall(firewall_id, [d["id"] for d in droplets])
             except DOAPIError as e:
                 formatting.warning(f"Warning: could not attach default SSH-only firewall: {e}")
 
@@ -1000,7 +1020,7 @@ class DOConsole(cmd.Cmd):
         }, preamble="New Snapshot")
 
     def create_firewall(self, line):
-        """Create a firewall. Usage: create firewall <name> [--ports 22,80,443] [--attach]"""
+        """Create a firewall. Usage: create firewall <name> [--ports 22,80,443] [--attach] [--tag <name>]"""
         try:
             argv = shlex.split(line)
         except ValueError as e:
@@ -1033,7 +1053,8 @@ class DOConsole(cmd.Cmd):
 
         try:
             firewall = self.api.create_firewall(args.name, inbound_rules, DEFAULT_OUTBOUND_RULES,
-                                                 droplet_ids=droplet_ids)
+                                                 droplet_ids=droplet_ids,
+                                                 tags=[args.tag] if args.tag else None)
         except DOAPIError as e:
             formatting.error(f"Could not create firewall: {e}")
             return
@@ -1044,6 +1065,7 @@ class DOConsole(cmd.Cmd):
             "Status": firewall.get("status", "unknown"),
             "Inbound Ports": ",".join(ports),
             "Attached Droplets": len(droplet_ids) if droplet_ids else 0,
+            "Tag": args.tag or "none",
         }, preamble="New Firewall")
 
     def create_tag(self, name):
@@ -1065,17 +1087,60 @@ class DOConsole(cmd.Cmd):
 
     # Add Commands
     def do_add(self, line):
-        """Add: tag."""
+        """Add: tag, firewall."""
         args = line.split()
         if len(args) == 0:
-            formatting.error("Usage: add <tag>")
+            formatting.error("Usage: add <tag|firewall>")
             return
 
         command = args[0]
         if command == "tag":
             self.add_tag(" ".join(args[1:]))
+        elif command == "firewall":
+            self.add_firewall(" ".join(args[1:]))
         else:
             formatting.error(f"Unknown subcommand: {command}")
+
+    def _resolve_firewall_id(self, name):
+        try:
+            firewalls = self.api.list_firewalls()
+        except DOAPIError:
+            return None
+        for fw in firewalls:
+            if fw.get("name") == name or str(fw.get("id")) == str(name):
+                return fw["id"]
+        return None
+
+    def add_firewall(self, name):
+        """Add the target droplet(s) to an existing firewall. Usage: add firewall <name_or_id>"""
+        if self.target is None:
+            formatting.error("No droplet selected. Use 'set droplet' command to select a droplet.")
+            return
+
+        if not name:
+            formatting.error("Please provide the name (or ID) of the firewall to add to.")
+            return
+
+        targets = self._target_droplets()
+        if not targets:
+            formatting.error("No droplets match the current target.")
+            return
+
+        firewall_id = self._resolve_firewall_id(name)
+        if firewall_id is None:
+            formatting.error(f"No firewall named '{name}' found. Use 'show firewalls' to see available firewalls.")
+            return
+
+        droplet_ids = [d['ID'] for d in targets]
+        droplet_names = [d['Name'] for d in targets]
+
+        try:
+            self.api.add_droplets_to_firewall(firewall_id, droplet_ids)
+        except DOAPIError as e:
+            formatting.error(f"Could not add droplet(s) to firewall: {e}")
+            return
+
+        formatting.success(f"Added droplet(s) '{','.join(droplet_names)}' to firewall '{name}'.")
 
     def add_tag(self, tag_name):
         """Add a tag to the target droplet(s)."""
@@ -1401,7 +1466,8 @@ def resolve_settings(args, env=None):
     ssh_key = args.key or env.get('DOCONSOLE_SSH_KEY') or os.path.expanduser(os.path.join('~', '.ssh', 'id_rsa'))
     playbooks_dir = args.playbooks or env.get('DOCONSOLE_PLAYBOOKS_DIR') or os.path.join(os.getcwd(), 'playbooks')
     auto_upload_ssh_key = _parse_bool_env(env.get('DOCONSOLE_AUTO_UPLOAD_SSH_KEY'), default=True)
-    return token, ssh_key, playbooks_dir, auto_upload_ssh_key
+    default_tag = (env.get('DOCONSOLE_DEFAULT_TAG') or "").strip() or None
+    return token, ssh_key, playbooks_dir, auto_upload_ssh_key, default_tag
 
 
 def main():
@@ -1422,9 +1488,10 @@ def main():
 
     args = parser.parse_args()
 
-    token, ssh_key, playbooks_dir, auto_upload_ssh_key = resolve_settings(args)
+    token, ssh_key, playbooks_dir, auto_upload_ssh_key, default_tag = resolve_settings(args)
 
-    console = DOConsole(token, ssh_key, playbooks_dir, profile=args.profile, auto_upload_ssh_key=auto_upload_ssh_key)
+    console = DOConsole(token, ssh_key, playbooks_dir, profile=args.profile,
+                         auto_upload_ssh_key=auto_upload_ssh_key, default_tag=default_tag)
 
     if console.token is None:
         formatting.error("DigitalOcean API token not provided. Set --token, DO_API_TOKEN, put DO_API_TOKEN in a "

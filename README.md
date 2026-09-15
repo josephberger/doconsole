@@ -92,10 +92,12 @@
      - Snapshots the single selected target droplet. Example: `create snapshot golden-image`
    - **Create Firewall**:
      ```sh
-     create firewall <name> [--ports 22,80,443] [--attach]
+     create firewall <name> [--ports 22,80,443] [--attach] [--tag <name>]
      ```
-     - `--ports` defaults to `22` (SSH-only). `--attach` attaches the current target droplet(s) (requires one selected via `set droplet`); without it, the firewall is created unattached.
-     - Example: `create firewall web-only --ports 80,443`
+     - `--ports` defaults to `22` (SSH-only).
+     - `--attach` attaches the current target droplet(s) at creation time (requires one selected via `set droplet`) — DigitalOcean's explicit, one-time `droplet_ids` association.
+     - `--tag <name>` instead targets every droplet carrying that tag, present *or future* — DigitalOcean's other, self-updating association mechanism. `--attach` and `--tag` can be combined.
+     - Example: `create firewall web-only --ports 80,443`, or `create firewall ssh-only --tag doconsole` for a firewall that auto-applies to anything you tag later.
    - **Create Tag**:
      ```sh
      create tag <tag_name>
@@ -106,6 +108,11 @@
      add tag <tag_name>
      ```
      - Example: `add tag production`
+   - **Add to Firewall**:
+     ```sh
+     add firewall <name_or_id>
+     ```
+     - Adds the current target droplet(s) to an existing firewall (matched by exact name, or a literal ID). DigitalOcean's firewall-droplet relationship is only ever managed from the firewall's side — there's no "attach a firewall to a droplet" API call — so, like `add tag`, this reads as "attach X to my droplet(s)" from the console while making the DO-correct call underneath. Example: `add firewall web-only`
    - **Run Playbook**:
      ```sh
      run playbook <playbook_path>
@@ -169,8 +176,8 @@
 
 - **set**: configure the target droplet (by index/name/`all`/`tag:x`), active playbook, API token (session-only), SSH key, the default region/size/image/vpc (via arrow-key pickers) for new droplets, and whether the default SSH-only firewall is attached.
 - **show**: display droplets (with estimated cost), playbooks, tags, the current target, console/account info, snapshots, pending TTL auto-destroys, firewalls, or an environment self-check (`doctor`).
-- **create**: create one or more new droplets with the configured defaults (optionally random-named, from cloud-init user-data or a snapshot, with a TTL), snapshot the selected droplet, create a firewall (optionally attached to the target), or create a standalone tag.
-- **add**: add a tag to the selected droplet(s).
+- **create**: create one or more new droplets with the configured defaults (optionally random-named, from cloud-init user-data or a snapshot, with a TTL), snapshot the selected droplet, create a firewall (by explicit attach and/or tag), or create a standalone tag.
+- **add**: add a tag, or add to an existing firewall, for the selected droplet(s).
 - **run**: run a playbook against the target droplet(s).
 - **power**: power on/off/reboot/cycle/shutdown the target droplet(s) without destroying them.
 - **resize**: resize the target droplet (must be powered off first).
@@ -190,6 +197,7 @@
 - **TTL leases**: tracked at `~/.doconsole/leases.json` (see `show leases`).
 - **Profiles**: pass `--profile <name>` to use `~/.doconsole/profiles/<name>.json` instead of the default config file — separate region/size/image/vpc/ssh-key defaults per profile. The token still isn't saved automatically even under a profile; run `set token <value> --save` to save it into the *active* profile (or the default config, if no `--profile` was given) — this is what makes profiles actually useful for switching between DigitalOcean accounts without retyping a token every session.
 - **Auto-upload SSH key**: on by default. Set `DOCONSOLE_AUTO_UPLOAD_SSH_KEY=false` (env var or `.env`) to disable — see `.env.example`. `show doctor` reports whether your local key is currently registered.
+- **Default tag**: off (unset) by default. Set `DOCONSOLE_DEFAULT_TAG=<name>` (env var or `.env`) to auto-tag every new droplet with it. When set, the default SSH-only firewall (see `set firewall`) is created targeting that tag instead of explicit per-droplet IDs, so it auto-applies to any droplet carrying the tag — present or future — with no per-droplet attach call needed. This is how you'd reuse a firewall you already manage this way outside doconsole: point `DOCONSOLE_DEFAULT_TAG` at that same tag, and consider `set firewall off` so doconsole doesn't also spin up its own separate firewall.
 
 ### TTL auto-destroy caveats
 
